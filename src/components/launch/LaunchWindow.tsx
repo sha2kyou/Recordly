@@ -1,9 +1,7 @@
 import {
 	AppWindow,
-	ArrowCircleUp as ArrowUpCircle,
 	ArrowClockwise as RefreshCw,
 	CaretUp as ChevronUp,
-	CheckCircle as CheckCircle2,
 	DotsThreeVertical as MoreVertical,
 	Eye,
 	EyeSlash as EyeOff,
@@ -197,23 +195,6 @@ export function LaunchWindow() {
 	const [recordingHudOffset, setRecordingHudOffset] = useState(DEFAULT_RECORDING_HUD_OFFSET);
 	const [platform, setPlatform] = useState<string | null>(null);
 	const [appVersion, setAppVersion] = useState<string | null>(null);
-	const [updateStatus, setUpdateStatus] = useState<{
-		status:
-			| "idle"
-			| "checking"
-			| "up-to-date"
-			| "available"
-			| "downloading"
-			| "ready"
-			| "error";
-		currentVersion: string;
-		availableVersion: string | null;
-		detail?: string;
-	}>({
-		status: "idle",
-		currentVersion: "",
-		availableVersion: null,
-	});
 	const [updateActionPending, setUpdateActionPending] = useState(false);
 	const dropdownRef = useRef<HTMLDivElement>(null);
 	const hudContentRef = useRef<HTMLDivElement>(null);
@@ -662,31 +643,6 @@ export function LaunchWindow() {
 	}, [preparePermissions]);
 
 	useEffect(() => {
-		let mounted = true;
-
-		const refreshUpdateStatus = async () => {
-			try {
-				const summary = await window.electronAPI.getUpdateStatusSummary();
-				if (mounted) {
-					setUpdateStatus(summary);
-				}
-			} catch (error) {
-				console.error("Failed to load update status summary:", error);
-			}
-		};
-
-		void refreshUpdateStatus();
-		const pollTimer = window.setInterval(() => {
-			void refreshUpdateStatus();
-		}, 2500);
-
-		return () => {
-			mounted = false;
-			window.clearInterval(pollTimer);
-		};
-	}, []);
-
-	useEffect(() => {
 		let cancelled = false;
 		const loadVersion = async () => {
 			try {
@@ -956,69 +912,16 @@ export function LaunchWindow() {
 		toggleDropdown("webcam");
 	};
 
-	const updateButtonLabel =
-		updateStatus.status === "up-to-date"
-			? t("recording.update.updated")
-			: t("recording.update.update");
-	const updateButtonTitle = (() => {
-		switch (updateStatus.status) {
-			case "up-to-date":
-				return t("recording.update.upToDateTitle", "Recordly {{version}} is up to date.", {
-					version: updateStatus.currentVersion,
-				});
-			case "available":
-			case "ready":
-				return updateStatus.availableVersion
-					? t("recording.update.availableTitle", "Recordly {{version}} is available.", {
-							version: updateStatus.availableVersion,
-						})
-					: t("recording.update.availableGenericTitle");
-			case "downloading":
-				return updateStatus.detail ?? t("recording.update.downloadingTitle");
-			case "checking":
-				return t("recording.update.checkingTitle");
-			case "error":
-				return updateStatus.detail ?? t("recording.update.errorTitle");
-			default:
-				return t("recording.update.idleTitle");
-		}
-	})();
-	const updateButtonClassName = `${styles.updateBadge} ${updateStatus.status === "up-to-date" ? styles.updateBadgeQuiet : styles.updateBadgeHot} ${styles.electronNoDrag}`;
-	const updateButtonIcon = (() => {
-		switch (updateStatus.status) {
-			case "up-to-date":
-				return <CheckCircle2 size={14} />;
-			case "checking":
-			case "downloading":
-				return <RefreshCw size={14} className={styles.updateBadgeSpin} />;
-			default:
-				return <ArrowUpCircle size={14} />;
-		}
-	})();
-
-	const handleUpdateButtonClick = async () => {
-		if (updateActionPending || updateStatus.status === "downloading") {
+	const handleCheckForUpdates = async () => {
+		if (updateActionPending) {
 			return;
 		}
 
 		setUpdateActionPending(true);
 		try {
-			switch (updateStatus.status) {
-				case "available":
-					await window.electronAPI.downloadAvailableUpdate();
-					break;
-				case "ready":
-					await window.electronAPI.installDownloadedUpdate();
-					break;
-				default:
-					await window.electronAPI.checkForAppUpdates();
-					break;
-			}
-
-			const summary = await window.electronAPI.getUpdateStatusSummary();
-			setUpdateStatus(summary);
+			await window.electronAPI.checkForAppUpdates();
 		} catch (error) {
-			console.error("Failed to handle update button action:", error);
+			console.error("Failed to check for updates:", error);
 		} finally {
 			setUpdateActionPending(false);
 		}
@@ -1507,6 +1410,26 @@ export function LaunchWindow() {
 									>
 										{t("recording.openProject")}
 									</DropdownItem>
+									<DropdownItem
+										icon={
+											<RefreshCw
+												size={16}
+												className={updateActionPending ? styles.updateBadgeSpin : undefined}
+											/>
+										}
+										onClick={() => {
+											void handleCheckForUpdates();
+										}}
+										trailing={
+											updateActionPending ? (
+												<span className="text-[11px] text-[#6b6b78]">
+													{t("recording.update.checkingTitle")}
+												</span>
+											) : undefined
+										}
+									>
+										{t("recording.update.update", "Check for updates")}
+									</DropdownItem>
 									<div className={styles.ddLabel} style={{ marginTop: 4 }}>
 										{t("recording.language")}
 									</div>
@@ -1564,19 +1487,6 @@ export function LaunchWindow() {
 							>
 								<RxDragHandleDots2 size={14} className="text-[#6b6b78]" />
 							</div>
-
-							<button
-								type="button"
-								onClick={() => {
-									void handleUpdateButtonClick();
-								}}
-								className={updateButtonClassName}
-								title={updateButtonTitle}
-								disabled={updateActionPending}
-							>
-								{updateButtonIcon}
-								<span>{updateButtonLabel}</span>
-							</button>
 
 							<div className={styles.barStateViewport}>
 								<AnimatePresence initial={false} mode="wait">

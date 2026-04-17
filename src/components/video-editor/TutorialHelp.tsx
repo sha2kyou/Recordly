@@ -1,4 +1,4 @@
-import { ArrowRight, ExternalLink, HelpCircle, Keyboard, MessageSquareMore, Scissors, Settings2, Twitter } from "lucide-react";
+import { ArrowRight, HelpCircle, Keyboard, Scissors, Settings2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,133 +13,12 @@ import { useScopedT } from "@/contexts/I18nContext";
 import { useShortcuts } from "@/contexts/ShortcutsContext";
 import { formatBinding, SHORTCUT_ACTIONS, SHORTCUT_LABELS } from "@/lib/shortcuts";
 import { formatShortcut } from "@/utils/platformUtils";
-import { toast } from "sonner";
-
-export const RECORDLY_ISSUES_URL = "https://github.com/webadderall/Recordly/issues";
-const RECORDLY_DISCORD_URL = "https://discord.gg/FcfNN4S9m";
-const RECORDLY_X_URL = "https://x.com/webadderall";
-const CONTACT_EMAIL = "youngchen3442@gmail.com";
 export const APP_HEADER_ACTION_BUTTON_CLASS = "h-7 px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-slate-200 transition-all gap-1.5";
 export const APP_HEADER_ICON_BUTTON_CLASS = "h-7 w-7 p-0 text-slate-400 hover:bg-white/10 hover:text-slate-200 transition-all";
 
 interface KeyboardShortcutsDialogProps {
 	triggerLabel?: string;
 	triggerClassName?: string;
-}
-
-function DiscordIcon(props: React.SVGProps<SVGSVGElement>) {
-	return (
-		<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
-			<path d="M20.317 4.369A19.791 19.791 0 0 0 15.418 3a13.255 13.255 0 0 0-.615 1.263 18.27 18.27 0 0 0-5.606 0A13.25 13.25 0 0 0 8.582 3a19.736 19.736 0 0 0-4.9 1.369C.533 9.091-.32 13.697.099 18.237a19.917 19.917 0 0 0 5.993 3.024 14.32 14.32 0 0 0 1.284-2.108 12.804 12.804 0 0 1-2.021-.972c.17-.126.335-.258.495-.395a14.135 14.135 0 0 0 12.3 0c.16.137.325.269.495.395a12.736 12.736 0 0 1-2.026.974 14.103 14.103 0 0 0 1.284 2.106 19.883 19.883 0 0 0 5.996-3.024c.489-5.258-.836-9.822-3.682-13.868ZM8.02 15.331c-1.182 0-2.154-1.085-2.154-2.419 0-1.334.953-2.419 2.154-2.419 1.211 0 2.173 1.095 2.154 2.419 0 1.334-.953 2.419-2.154 2.419Zm7.96 0c-1.182 0-2.154-1.085-2.154-2.419 0-1.334.953-2.419 2.154-2.419 1.211 0 2.173 1.095 2.154 2.419 0 1.334-.943 2.419-2.154 2.419Z" />
-		</svg>
-	);
-}
-
-export async function openExternalLink(url: string, errorMessage: string) {
-	try {
-		const result = await window.electronAPI.openExternalUrl(url);
-		if (!result.success) {
-			toast.error(result.error || errorMessage);
-		}
-	} catch (error) {
-		toast.error(`${errorMessage} ${String(error)}`);
-	}
-}
-
-export function DiscordLinkButton() {
-	const t = useScopedT("editor");
-
-	return (
-		<Button
-			type="button"
-			variant="ghost"
-			size="sm"
-			onClick={() => void openExternalLink(RECORDLY_DISCORD_URL, t("feedback.openFailed", "Failed to open link."))}
-			className={APP_HEADER_ICON_BUTTON_CLASS}
-			title={t("common.app.discord", "Join Discord")}
-			aria-label={t("common.app.discord", "Join Discord")}
-		>
-			<DiscordIcon className="h-3.5 w-3.5" />
-		</Button>
-	);
-}
-
-export function FeedbackDialog() {
-	const t = useScopedT("editor");
-
-	return (
-		<Dialog>
-			<DialogTrigger asChild>
-				<Button
-					variant="ghost"
-					size="sm"
-					className={APP_HEADER_ICON_BUTTON_CLASS}
-					title={t("feedback.trigger", "Feedback")}
-					aria-label={t("feedback.trigger", "Feedback")}
-				>
-					<MessageSquareMore className="h-3.5 w-3.5" />
-				</Button>
-			</DialogTrigger>
-			<DialogContent className="max-w-lg bg-[#09090b] border-white/10 [&>button]:text-slate-400 [&>button:hover]:text-white">
-				<DialogHeader>
-					<DialogTitle className="text-xl font-semibold text-slate-200 flex items-center gap-2">
-						<MessageSquareMore className="h-5 w-5 text-[#2563EB]" /> {t("feedback.title", "Feedback & contact")}
-					</DialogTitle>
-					<DialogDescription className="text-slate-400">
-						{t("feedback.description", "Reach out directly or open an issue if something is broken or missing.")}
-					</DialogDescription>
-				</DialogHeader>
-				<div className="mt-4 space-y-4">
-					<div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
-						<div className="flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-white/5 px-3 py-3">
-							<div>
-								<p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-									{t("feedback.emailLabel", "Email")}
-								</p>
-								<p className="mt-1 text-sm font-medium text-slate-100">{CONTACT_EMAIL}</p>
-							</div>
-							<Button
-								type="button"
-								variant="outline"
-								onClick={() => void openExternalLink(`mailto:${CONTACT_EMAIL}`, t("feedback.openFailed", "Failed to open link."))}
-								className="border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white"
-							>
-								<ExternalLink className="h-3.5 w-3.5" />
-							</Button>
-						</div>
-						<div className="flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-white/5 px-3 py-3">
-							<div>
-								<p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-									{t("feedback.xLabel", "X")}
-								</p>
-								<p className="mt-1 text-sm font-medium text-slate-100">@webadderall</p>
-							</div>
-							<Button
-								type="button"
-								variant="outline"
-								onClick={() => void openExternalLink(RECORDLY_X_URL, t("feedback.openFailed", "Failed to open link."))}
-								className="border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white"
-							>
-								<Twitter className="h-3.5 w-3.5" />
-							</Button>
-						</div>
-					</div>
-					<Button
-						type="button"
-						variant="outline"
-						onClick={() => void openExternalLink(RECORDLY_ISSUES_URL, t("feedback.openFailed", "Failed to open link."))}
-						className="h-10 w-full justify-between border-white/10 bg-white/5 px-4 text-slate-200 hover:bg-white/10 hover:text-white"
-					>
-						<span className="flex items-center gap-2 text-sm font-medium">
-							<MessageSquareMore className="h-4 w-4" />
-							{t("feedback.reportIssue", "Report issue / send feedback")}
-						</span>
-						<ExternalLink className="h-3.5 w-3.5 text-slate-500" />
-					</Button>
-				</div>
-			</DialogContent>
-		</Dialog>
-	);
 }
 
 export function KeyboardShortcutsDialog({

@@ -20,7 +20,6 @@ import {
 	SkipForward,
 	Sparkle,
 	ArrowCounterClockwise as Undo2,
-	UserCircle as User,
 	SpeakerLow as Volume1,
 	SpeakerHigh as Volume2,
 	SpeakerX as VolumeX,
@@ -116,10 +115,6 @@ import {
 import { SettingsPanel } from "./SettingsPanel";
 import {
 	APP_HEADER_ICON_BUTTON_CLASS,
-	DiscordLinkButton,
-	FeedbackDialog,
-	openExternalLink,
-	RECORDLY_ISSUES_URL,
 } from "./TutorialHelp";
 import TimelineEditor, { type TimelineEditorHandle } from "./timeline/TimelineEditor";
 import { normalizeCursorTelemetry } from "./timeline/zoomSuggestionUtils";
@@ -4145,13 +4140,6 @@ export default function VideoEditor() {
 		}
 	}, [exportedFilePath]);
 
-	const openLightningIssues = useCallback(async () => {
-		await openExternalLink(
-			RECORDLY_ISSUES_URL,
-			t("editor.feedback.openFailed", "Failed to open link."),
-		);
-	}, [t]);
-
 	const isExportSaving = exportProgress?.phase === "saving";
 	const isExportFinalizing = exportProgress?.phase === "finalizing";
 	const isRenderingAudio =
@@ -4286,8 +4274,6 @@ export default function VideoEditor() {
 					>
 						<FolderOpen className="h-4 w-4" />
 					</Button>
-					<DiscordLinkButton />
-					<FeedbackDialog />
 					<div className="ml-1 h-5 w-px bg-white/10" />
 					<Button
 						type="button"
@@ -4393,13 +4379,7 @@ export default function VideoEditor() {
 											{isLightningExportInProgress ? (
 												<p className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
 													PLEASE
-													<button
-														type="button"
-														onClick={() => void openLightningIssues()}
-														className="underline decoration-slate-500/70 underline-offset-2 transition-colors hover:text-slate-200"
-													>
-														report bugs
-													</button>
+													<span>report bugs</span>
 													with Lightning export
 													<span aria-hidden="true">{"\u{1F64F}"}</span>
 												</p>
@@ -4620,19 +4600,6 @@ export default function VideoEditor() {
 									</div>
 								);
 							})}
-							<div className="mt-auto pt-3">
-								<motion.button
-									type="button"
-									onClick={() => toast.info("Account coming soon")}
-									title="Account"
-									className="group relative flex h-9 w-9 items-center justify-center rounded-lg text-white/55 outline-none transition hover:text-white focus:outline-none focus-visible:outline-none"
-									whileHover={{ opacity: 1 }}
-									initial={{ opacity: 0.55 }}
-								>
-									<motion.span className="absolute inset-0 rounded-lg bg-white/[0.04] opacity-0 transition group-hover:opacity-100" />
-									<User className="relative z-10 h-[22px] w-[22px]" />
-								</motion.button>
-							</div>
 						</div>
 						{/* Panel */}
 						{activeEffectSection === "extensions" ? (
