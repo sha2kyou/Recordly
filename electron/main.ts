@@ -156,14 +156,20 @@ let recordingTrayIcon: ReturnType<typeof getTrayIcon> | null = null;
 
 function getDefaultTrayIcon() {
 	if (!defaultTrayIcon) {
-		defaultTrayIcon = getTrayIcon("app-icons/recordly-32.png");
+		defaultTrayIcon =
+			process.platform === "darwin"
+				? getTrayIcon("rec-button.png", true)
+				: getTrayIcon("app-icons/recordly-32.png");
 	}
 	return defaultTrayIcon;
 }
 
 function getRecordingTrayIcon() {
 	if (!recordingTrayIcon) {
-		recordingTrayIcon = getTrayIcon("rec-button.png");
+		recordingTrayIcon =
+			process.platform === "darwin"
+				? getTrayIcon("rec-button.png", false)
+				: getTrayIcon("rec-button.png");
 	}
 	return recordingTrayIcon;
 }
@@ -444,12 +450,16 @@ function getAppImage(filename: string) {
 	return nativeImage.createFromPath(getPublicAssetPath(filename));
 }
 
-function getTrayIcon(filename: string) {
-	return getAppImage(filename).resize({
+function getTrayIcon(filename: string, template?: boolean) {
+	const image = getAppImage(filename).resize({
 		width: 24,
 		height: 24,
 		quality: "best",
 	});
+	if (process.platform === "darwin" && template !== undefined) {
+		image.setTemplateImage(template);
+	}
+	return image;
 }
 
 function syncDockIcon() {
