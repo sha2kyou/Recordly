@@ -4544,7 +4544,7 @@ export default function VideoEditor() {
 											type="button"
 											onClick={() => setActiveEffectSection(section.id)}
 											title={section.label}
-											className="group relative flex h-9 w-9 items-center justify-center rounded-lg outline-none focus:outline-none focus-visible:outline-none"
+											className="group relative flex h-8 w-8 items-center justify-center rounded-lg outline-none focus:outline-none focus-visible:outline-none"
 											animate={{ opacity: isActive ? 1 : 0.55 }}
 											transition={{ duration: 0.14 }}
 										>
@@ -4571,11 +4571,11 @@ export default function VideoEditor() {
 												{typeof section.icon === "string" ? (
 													<ExtensionIcon
 														icon={section.icon}
-														className="h-[27px] w-[27px]"
+														className="h-[22px] w-[22px]"
 													/>
 												) : (
 													<section.icon
-														className="h-[27px] w-[27px]"
+														className="h-[22px] w-[22px]"
 														weight={isActive ? "fill" : "regular"}
 													/>
 												)}
