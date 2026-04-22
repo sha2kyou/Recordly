@@ -216,11 +216,10 @@ npm run dev
 npm run build
 ```
 
-也可以使用平台专用构建命令：
+当前仅支持 Apple Silicon macOS 打包：
 
 - `npm run build:mac`
-- `npm run build:win`
-- `npm run build:linux`
+- `npm run package:macos-arm64`
 
 ---
 

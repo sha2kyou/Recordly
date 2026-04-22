@@ -215,11 +215,10 @@ For packaged builds:
 npm run build
 ```
 
-Target-specific build commands are also available:
+Packaging now only supports Apple Silicon macOS:
 
 - `npm run build:mac`
-- `npm run build:win`
-- `npm run build:linux`
+- `npm run package:macos-arm64`
 
 ---
 
