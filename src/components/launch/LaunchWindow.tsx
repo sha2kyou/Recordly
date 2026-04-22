@@ -235,6 +235,12 @@ export function LaunchWindow() {
 	>(null);
 	const isHudDraggingRef = useRef(false);
 	const isWebcamPreviewDraggingRef = useRef(false);
+	const hudSizeReportTimerRef = useRef<number | null>(null);
+	const lastHudSizeReportRef = useRef<{
+		width: number;
+		height: number;
+		expanded: boolean;
+	} | null>(null);
 
 	const micDropdownOpen = activeDropdown === "mic";
 	const webcamDropdownOpen = activeDropdown === "webcam";
@@ -691,11 +697,31 @@ export function LaunchWindow() {
 			return;
 		}
 
+		const commitHudSize = (width: number, height: number, expanded: boolean) => {
+			const roundedWidth = Math.max(0, Math.ceil(width));
+			const roundedHeight = Math.max(0, Math.ceil(height));
+			const previous = lastHudSizeReportRef.current;
+			if (
+				previous &&
+				previous.width === roundedWidth &&
+				previous.height === roundedHeight &&
+				previous.expanded === expanded
+			) {
+				return;
+			}
+			lastHudSizeReportRef.current = {
+				width: roundedWidth,
+				height: roundedHeight,
+				expanded,
+			};
+			window.electronAPI.setHudOverlayCompactWidth(roundedWidth);
+			window.electronAPI.setHudOverlayMeasuredHeight(roundedHeight, expanded);
+		};
+
 		if (showRecordingWebcamPreview) {
 			const viewportWidth = Math.max(window.innerWidth, window.screen?.width ?? 0);
 			const viewportHeight = Math.max(window.innerHeight, window.screen?.height ?? 0);
-			window.electronAPI.setHudOverlayCompactWidth(Math.ceil(viewportWidth));
-			window.electronAPI.setHudOverlayMeasuredHeight(Math.ceil(viewportHeight), true);
+			commitHudSize(viewportWidth, viewportHeight, true);
 			return;
 		}
 
@@ -709,9 +735,9 @@ export function LaunchWindow() {
 		);
 		const standardHeight = Math.max(hudContentRect.height, hudContent.scrollHeight);
 
-		window.electronAPI.setHudOverlayCompactWidth(Math.ceil(standardWidth + 24));
-		window.electronAPI.setHudOverlayMeasuredHeight(
-			Math.ceil(standardHeight + 24),
+		commitHudSize(
+			standardWidth + 24,
+			standardHeight + 24,
 			activeDropdown !== "none" || projectBrowserOpen,
 		);
 	}, [activeDropdown, projectBrowserOpen, showRecordingWebcamPreview]);
@@ -724,15 +750,14 @@ export function LaunchWindow() {
 			return;
 		}
 
-		let frameId = 0;
 		const scheduleHudSizeReport = () => {
-			if (frameId !== 0) {
-				cancelAnimationFrame(frameId);
+			if (hudSizeReportTimerRef.current !== null) {
+				return;
 			}
-			frameId = requestAnimationFrame(() => {
-				frameId = 0;
+			hudSizeReportTimerRef.current = window.setTimeout(() => {
+				hudSizeReportTimerRef.current = null;
 				reportHudSize();
-			});
+			}, 80);
 		};
 
 		scheduleHudSizeReport();
@@ -748,8 +773,9 @@ export function LaunchWindow() {
 
 		return () => {
 			resizeObserver.disconnect();
-			if (frameId !== 0) {
-				cancelAnimationFrame(frameId);
+			if (hudSizeReportTimerRef.current !== null) {
+				window.clearTimeout(hudSizeReportTimerRef.current);
+				hudSizeReportTimerRef.current = null;
 			}
 		};
 	}, [reportHudSize]);
