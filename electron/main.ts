@@ -8,7 +8,6 @@ import {
 	dialog,
 	ipcMain,
 	Menu,
-	Notification,
 	nativeImage,
 	session,
 	systemPreferences,
@@ -25,29 +24,12 @@ import {
 } from "./ipc/handlers";
 import { ensureMediaServer } from "./mediaServer";
 import { ensurePackagedRendererServer } from "./rendererServer";
-import type { UpdateToastPayload } from "./updater";
-import {
-	checkForAppUpdates,
-	deferUpdateReminder,
-	dismissUpdateToast,
-	downloadAvailableUpdate,
-	getCurrentUpdateToastPayload,
-	getUpdaterLogPath,
-	getUpdateStatusSummary,
-	installDownloadedUpdateNow,
-	previewUpdateToast,
-	setupAutoUpdates,
-	skipAvailableUpdateVersion,
-} from "./updater";
 import {
 	createEditorWindow,
 	createHudOverlayWindow,
 	createSourceSelectorWindow,
 	getHudOverlayWindow,
-	getUpdateToastWindow,
-	hideUpdateToastWindow,
 	isHudOverlayMousePassthroughSupported,
-	showUpdateToastWindow,
 } from "./windows";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -129,8 +111,6 @@ let trayContextMenu: Menu | null = null;
 let selectedSourceName = "";
 let editorHasUnsavedChanges = false;
 let isForceClosing = false;
-let activeUpdateNotification: Notification | null = null;
-let activeUpdateNotificationKey: string | null = null;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
@@ -394,17 +374,6 @@ function setupApplicationMenu() {
 				? [{ role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "front" }]
 				: [{ role: "minimize" }, { role: "close" }],
 		},
-		{
-			label: "Help",
-			submenu: [
-				{
-					label: "Check for Updates…",
-					click: () => {
-						void checkForAppUpdates(getUpdateDialogWindow, { manual: true });
-					},
-				},
-			],
-		},
 	);
 
 	const menu = Menu.buildFromTemplate(template);
@@ -469,184 +438,6 @@ function syncDockIcon() {
 		app.dock.setIcon(dockIcon);
 	}
 }
-
-function getUpdateNotificationTitle(payload: UpdateToastPayload) {
-	switch (payload.phase) {
-		case "available":
-			return `Recordly ${payload.version} is available`;
-		case "downloading":
-			return `Downloading Recordly ${payload.version}`;
-		case "ready":
-			return `Recordly ${payload.version} is ready`;
-		case "error":
-			return `Recordly ${payload.version} needs attention`;
-	}
-}
-
-function getUpdateNotificationBody(payload: UpdateToastPayload) {
-	switch (payload.phase) {
-		case "available":
-			return "Click to download the update.";
-		case "downloading":
-			return "Recordly is downloading the update in the foreground.";
-		case "ready":
-			return "Click to install the downloaded update.";
-		case "error":
-			return "Click to retry checking for updates.";
-	}
-}
-
-function clearActiveUpdateNotification() {
-	if (activeUpdateNotification) {
-		activeUpdateNotification.close();
-		activeUpdateNotification = null;
-	}
-	activeUpdateNotificationKey = null;
-}
-
-function sendUpdateToastToWindows(channel: "update-toast-state", payload: unknown) {
-	if (process.platform !== "darwin") {
-		if (!payload) {
-			clearActiveUpdateNotification();
-			return true;
-		}
-
-		const updatePayload = payload as UpdateToastPayload;
-		if (updatePayload.phase === "downloading") {
-			return true;
-		}
-
-		if (!Notification.isSupported()) {
-			return false;
-		}
-
-		const notificationKey = [
-			updatePayload.phase,
-			updatePayload.version,
-			updatePayload.detail,
-		].join(":");
-		if (activeUpdateNotificationKey === notificationKey) {
-			return true;
-		}
-
-		clearActiveUpdateNotification();
-		const notification = new Notification({
-			title: getUpdateNotificationTitle(updatePayload),
-			body: getUpdateNotificationBody(updatePayload),
-			icon: getAppImage("app-icons/recordly-128.png"),
-			silent: false,
-		});
-
-		notification.on("click", () => {
-			focusOrCreateMainWindow();
-			switch (updatePayload.phase) {
-				case "available":
-					void downloadAvailableUpdate(sendUpdateToastToWindows);
-					break;
-				case "ready":
-					installDownloadedUpdateNow(sendUpdateToastToWindows);
-					break;
-				case "error":
-					void checkForAppUpdates(getUpdateDialogWindow, { manual: true });
-					break;
-				default:
-					break;
-			}
-		});
-
-		notification.on("close", () => {
-			if (activeUpdateNotification === notification) {
-				activeUpdateNotification = null;
-				activeUpdateNotificationKey = null;
-			}
-		});
-
-		notification.show();
-		// On Win10, showing a native notification can break setIgnoreMouseEvents
-		// forwarding on the transparent HUD overlay.  Re-assert it after a short
-		// delay so the renderer's hover detection keeps working.
-		reassertHudOverlayMouseState();
-		activeUpdateNotification = notification;
-		activeUpdateNotificationKey = notificationKey;
-		return true;
-	}
-
-	if (!payload) {
-		const existingWindow = getUpdateToastWindow();
-		if (!existingWindow) {
-			return false;
-		}
-
-		existingWindow.webContents.send(channel, null);
-		hideUpdateToastWindow();
-		return true;
-	}
-
-	const toastWindow = showUpdateToastWindow();
-	const sendPayload = () => {
-		toastWindow.webContents.send(channel, payload);
-		showUpdateToastWindow();
-	};
-
-	if (toastWindow.webContents.isLoadingMainFrame()) {
-		toastWindow.webContents.once("did-finish-load", sendPayload);
-	} else {
-		sendPayload();
-	}
-
-	return true;
-}
-
-function getUpdateDialogWindow() {
-	const focusedWindow = BrowserWindow.getFocusedWindow();
-	if (focusedWindow && !focusedWindow.isDestroyed()) {
-		return focusedWindow;
-	}
-
-	if (mainWindow && !mainWindow.isDestroyed()) {
-		return mainWindow;
-	}
-
-	return getHudOverlayWindow();
-}
-
-ipcMain.handle("install-downloaded-update", () => {
-	installDownloadedUpdateNow(sendUpdateToastToWindows);
-	return { success: true };
-});
-
-ipcMain.handle("download-available-update", () => {
-	return downloadAvailableUpdate(sendUpdateToastToWindows);
-});
-
-ipcMain.handle("defer-downloaded-update", (_event, delayMs?: number) => {
-	return deferUpdateReminder(getUpdateDialogWindow, sendUpdateToastToWindows, delayMs);
-});
-
-ipcMain.handle("dismiss-update-toast", () => {
-	return dismissUpdateToast(getUpdateDialogWindow, sendUpdateToastToWindows);
-});
-
-ipcMain.handle("skip-update-version", () => {
-	return skipAvailableUpdateVersion(sendUpdateToastToWindows);
-});
-
-ipcMain.handle("get-current-update-toast-payload", () => {
-	return getCurrentUpdateToastPayload();
-});
-
-ipcMain.handle("get-update-status-summary", () => {
-	return getUpdateStatusSummary();
-});
-
-ipcMain.handle("preview-update-toast", () => {
-	return { success: previewUpdateToast(sendUpdateToastToWindows) };
-});
-
-ipcMain.handle("check-for-app-updates", async () => {
-	await checkForAppUpdates(getUpdateDialogWindow, { manual: true });
-	return { success: true, logPath: getUpdaterLogPath() };
-});
 
 function updateTrayMenu(recording: boolean = false) {
 	if (!tray) return;
@@ -879,7 +670,6 @@ app.whenReady().then(async () => {
 	}
 
 	createWindow();
-	setupAutoUpdates(getUpdateDialogWindow, sendUpdateToastToWindows);
 
 	// Register the display media handler so that renderer's getDisplayMedia()
 	// calls land on the pre-selected source without showing a system picker.
@@ -928,8 +718,4 @@ app.whenReady().then(async () => {
 		}
 	});
 
-	const currentToastPayload = getCurrentUpdateToastPayload();
-	if (currentToastPayload) {
-		sendUpdateToastToWindows("update-toast-state", currentToastPayload);
-	}
 });

@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { CountdownOverlay } from "./components/countdown/CountdownOverlay";
 import { LaunchWindow } from "./components/launch/LaunchWindow";
 import { SourceSelector } from "./components/launch/SourceSelector";
-import { UpdateToastWindow } from "./components/launch/UpdateToastWindow";
 import { Toaster } from "./components/ui/sonner";
 import { ShortcutsConfigDialog } from "./components/video-editor/ShortcutsConfigDialog";
 import VideoEditor from "./components/video-editor/VideoEditor";
@@ -17,21 +16,15 @@ export default function App() {
 	useEffect(() => {
 		const params = new URLSearchParams(window.location.search);
 		const type = params.get("windowType") || "";
-		const isMacOS = /mac/i.test(navigator.platform);
 		setWindowType(type);
 
-		if (
-			type === "hud-overlay" ||
-			type === "source-selector" ||
-			type === "countdown" ||
-			(type === "update-toast" && isMacOS)
-		) {
+		if (type === "hud-overlay" || type === "source-selector" || type === "countdown") {
 			document.body.style.background = "transparent";
 			document.documentElement.style.background = "transparent";
 			document.getElementById("root")?.style.setProperty("background", "transparent");
 		}
 
-		if (type === "hud-overlay" || type === "update-toast") {
+		if (type === "hud-overlay") {
 			document.documentElement.style.overflow = "visible";
 			document.body.style.overflow = "visible";
 			document.getElementById("root")?.style.setProperty("overflow", "visible");
@@ -61,8 +54,6 @@ export default function App() {
 			return <SourceSelector />;
 		case "countdown":
 			return <CountdownOverlay />;
-		case "update-toast":
-			return <UpdateToastWindow />;
 		case "editor":
 			return (
 				<ShortcutsProvider>

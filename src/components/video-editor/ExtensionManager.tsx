@@ -7,7 +7,6 @@
  */
 
 import {
-	BookOpen,
 	Check,
 	CaretLeft as ChevronLeft,
 	CaretRight as ChevronRight,
@@ -41,9 +40,6 @@ const TAB_OPTIONS: { value: ExtensionTab; labelKey: string }[] = [
 	{ value: "browse", labelKey: "tabs.browse" },
 	{ value: "installed", labelKey: "tabs.installed" },
 ];
-
-const EXTENSIONS_DOCS_URL = "https://marketplace.recordly.dev/extensions";
-const EXTENSIONS_SUBMIT_URL = "https://marketplace.recordly.dev/extensions/submit";
 
 function toSafeHttpUrl(value?: string): string | null {
 	if (!value) return null;
@@ -785,26 +781,6 @@ export default function ExtensionManager() {
 						<h3 className="text-[13px] font-semibold text-foreground">{t("title")}</h3>
 					</div>
 					<div className="flex items-center gap-0.5">
-						<Button
-							variant="ghost"
-							size="icon"
-							className="h-6 w-6 text-muted-foreground/70 hover:text-muted-foreground hover:bg-foreground/10"
-							onClick={() =>
-								window.electronAPI?.openExternalUrl(EXTENSIONS_SUBMIT_URL)
-							}
-							title={t("actions.submit")}
-						>
-							<Plus className="w-3 h-3" />
-						</Button>
-						<Button
-							variant="ghost"
-							size="icon"
-							className="h-6 w-6 text-muted-foreground/70 hover:text-muted-foreground hover:bg-foreground/10"
-							onClick={() => window.electronAPI?.openExternalUrl(EXTENSIONS_DOCS_URL)}
-							title={t("actions.docs")}
-						>
-							<BookOpen className="w-3 h-3" />
-						</Button>
 						<Button
 							variant="ghost"
 							size="icon"
