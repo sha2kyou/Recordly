@@ -123,14 +123,16 @@ function Separator({ dropdown = false }: { dropdown?: boolean }) {
 function MicDeviceRow({
 	device,
 	selected,
+	meterEnabled,
 	onSelect,
 }: {
 	device: { deviceId: string; label: string };
 	selected: boolean;
+	meterEnabled: boolean;
 	onSelect: () => void;
 }) {
 	const { level } = useAudioLevelMeter({
-		enabled: true,
+		enabled: meterEnabled,
 		deviceId: device.deviceId,
 	});
 
@@ -193,7 +195,6 @@ export function LaunchWindow() {
 	const [webcamPreviewOffset, setWebcamPreviewOffset] = useState(DEFAULT_WEBCAM_PREVIEW_OFFSET);
 	const [recordingHudOffset, setRecordingHudOffset] = useState(DEFAULT_RECORDING_HUD_OFFSET);
 	const [platform, setPlatform] = useState<string | null>(null);
-	const [appVersion, setAppVersion] = useState<string | null>(null);
 	const dropdownRef = useRef<HTMLDivElement>(null);
 	const hudContentRef = useRef<HTMLDivElement>(null);
 	const hudBarRef = useRef<HTMLDivElement>(null);
@@ -645,22 +646,6 @@ export function LaunchWindow() {
 	useEffect(() => {
 		void preparePermissions({ startup: true });
 	}, [preparePermissions]);
-
-	useEffect(() => {
-		let cancelled = false;
-		const loadVersion = async () => {
-			try {
-				const version = await window.electronAPI.getAppVersion();
-				if (!cancelled) setAppVersion(version);
-			} catch (error) {
-				console.error("Failed to load app version:", error);
-			}
-		};
-		void loadVersion();
-		return () => {
-			cancelled = true;
-		};
-	}, []);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -1138,7 +1123,11 @@ export function LaunchWindow() {
 						</div>
 					) : null}
 					{activeDropdown !== "none" && (
-						<div className={`${styles.menuCard} ${styles.electronNoDrag}`}>
+						<div
+							className={`${styles.menuCard} ${styles.electronNoDrag} ${
+								activeDropdown === "more" ? styles.menuCardMore : ""
+							}`}
+						>
 							{activeDropdown === "sources" && (
 								<>
 									{sourcesLoading ? (
@@ -1250,26 +1239,28 @@ export function LaunchWindow() {
 											{t("recording.selectMicToEnable")}
 										</div>
 									)}
-									{devices.map((device) => (
-										<MicDeviceRow
-											key={device.deviceId}
-											device={device}
-											selected={
-												microphoneEnabled &&
-												(microphoneDeviceId === device.deviceId ||
-													selectedDeviceId === device.deviceId)
-											}
-											onSelect={() => {
-												setMicrophoneEnabled(true);
-												setSelectedDeviceId(device.deviceId);
-												setMicrophoneDeviceId(
-													device.deviceId === "default"
-														? undefined
-														: device.deviceId,
-												);
-											}}
-										/>
-									))}
+									{devices.map((device) => {
+										const isSelectedDevice =
+											microphoneDeviceId === device.deviceId ||
+											selectedDeviceId === device.deviceId;
+										return (
+											<MicDeviceRow
+												key={device.deviceId}
+												device={device}
+												selected={microphoneEnabled && isSelectedDevice}
+												meterEnabled={microphoneEnabled && isSelectedDevice}
+												onSelect={() => {
+													setMicrophoneEnabled(true);
+													setSelectedDeviceId(device.deviceId);
+													setMicrophoneDeviceId(
+														device.deviceId === "default"
+															? undefined
+															: device.deviceId,
+													);
+												}}
+											/>
+										);
+									})}
 									{devices.length === 0 && (
 										<div className="text-center text-xs text-[#6b6b78] py-4">
 											{t("recording.noMicrophonesFound")}
@@ -1443,20 +1434,6 @@ export function LaunchWindow() {
 											{LOCALE_LABELS[code] ?? code}
 										</DropdownItem>
 									))}
-									{appVersion && (
-										<div
-											style={{
-												marginTop: 8,
-												padding: "4px 12px",
-												fontSize: 11,
-												color: "#6b6b78",
-												textAlign: "center",
-												userSelect: "text",
-											}}
-										>
-											v{appVersion}
-										</div>
-									)}
 								</>
 							)}
 						</div>

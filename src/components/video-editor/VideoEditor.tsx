@@ -4777,7 +4777,7 @@ export default function VideoEditor() {
 					{/* Settings sidebar */}
 					<div className="flex flex-shrink-0 gap-1.5">
 						{/* Icon rail */}
-						<div className="flex flex-shrink-0 flex-col items-center gap-0.5 px-2 py-2">
+						<div className="flex flex-shrink-0 flex-col items-center gap-1.5 px-2.5 py-2.5">
 							{editorSectionButtons.map((section) => {
 								const isActive = activeEffectSection === section.id;
 								return (
@@ -4813,17 +4813,17 @@ export default function VideoEditor() {
 												{typeof section.icon === "string" ? (
 													<ExtensionIcon
 														icon={section.icon}
-														className="h-[27px] w-[27px]"
+														className="h-5 w-5"
 													/>
 												) : (
 													<section.icon
-														className="h-[27px] w-[27px]"
+														className="h-5 w-5"
 														weight={isActive ? "fill" : "regular"}
 													/>
 												)}
 											</motion.span>
 										</motion.button>
-										<div className="ml-1.5 h-1.5 w-1.5 flex-shrink-0">
+										<div className="ml-2 h-1.5 w-1.5 flex-shrink-0">
 											{isActive && (
 												<motion.span
 													layoutId="rail-active-dot"

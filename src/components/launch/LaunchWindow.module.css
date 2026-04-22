@@ -152,6 +152,11 @@
 	animation: menuCardIn 0.18s ease;
 }
 
+.menuCardMore {
+	max-height: none;
+	overflow-y: visible;
+}
+
 @keyframes menuCardIn {
 	from {
 		opacity: 0;
