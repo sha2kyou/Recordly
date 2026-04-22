@@ -144,6 +144,22 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		[clearRecordingFinalizationToast],
 	);
 
+	const showSystemMessage = useCallback(
+		async (message: string, detail?: string) => {
+			try {
+				await window.electronAPI.showSystemMessage({
+					type: "warning",
+					title: "Recordly",
+					message,
+					detail,
+				});
+			} catch (error) {
+				console.warn("Failed to show system message dialog:", error);
+			}
+		},
+		[],
+	);
+
 	const logNativeCaptureDiagnostics = useCallback(async (context: string) => {
 		if (typeof window.electronAPI?.getLastNativeCaptureDiagnostics !== "function") {
 			return;
@@ -238,7 +254,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		const screenPermission = await window.electronAPI.getScreenRecordingPermissionStatus();
 		if (!screenPermission.success || screenPermission.status !== "granted") {
 			await window.electronAPI.openScreenRecordingPreferences();
-			alert(
+			await showSystemMessage(
 				options.startup
 					? "Recordly needs Screen Recording permission before you start. System Settings has been opened. After enabling it, quit and reopen Recordly."
 					: "Screen Recording permission is still missing. System Settings has been opened again. Enable it, then quit and reopen Recordly before recording.",
@@ -261,14 +277,14 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		}
 
 		await window.electronAPI.openAccessibilityPreferences();
-		alert(
+		await showSystemMessage(
 			options.startup
 				? "Recordly also needs Accessibility permission for cursor tracking. System Settings has been opened. After enabling it, quit and reopen Recordly."
 				: "Accessibility permission is still missing. System Settings has been opened again. Enable it, then quit and reopen Recordly before recording.",
 		);
 
 		return false;
-	}, []);
+	}, [showSystemMessage]);
 
 	const selectMimeType = useCallback(() => {
 		return selectRecordingMimeType();
@@ -800,7 +816,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 					if (state.reason === "window-unavailable" && !hasPromptedForReselect.current) {
 						hasPromptedForReselect.current = true;
-						alert(state.message);
+						await showSystemMessage(state.message);
 						await window.electronAPI.openSourceSelector();
 					} else {
 						console.error(state.message);
@@ -828,7 +844,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 			cleanupCapturedMedia();
 		};
-	}, [cleanupCapturedMedia, recoverNativeRecordingSession]);
+	}, [cleanupCapturedMedia, recoverNativeRecordingSession, showSystemMessage]);
 
 	const startRecording = async () => {
 		if (startInFlight.current) {
@@ -845,7 +861,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			const selectedSource =
 				existingSource ?? (platform === "linux" ? LINUX_PORTAL_SOURCE : null);
 			if (!selectedSource) {
-				alert("Please select a source to record");
+				await showSystemMessage("Please select a source to record");
 				return;
 			}
 			// Persist the synthetic Linux portal sentinel to main so that the
@@ -1075,7 +1091,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 							"System audio capture failed, falling back to video-only:",
 							audioError,
 						);
-						alert(
+						await showSystemMessage(
 							"System audio is not available for this source. Recording will continue without system audio.",
 						);
 						screenMediaStream = useLinuxPortal
@@ -1123,7 +1139,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 						});
 					} catch (audioError) {
 						console.warn("Failed to get microphone access:", audioError);
-						alert(
+						await showSystemMessage(
 							"Microphone access was denied. Recording will continue without microphone audio.",
 						);
 						setMicrophoneEnabled(false);
@@ -1294,7 +1310,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			window.electronAPI?.setRecordingState(true);
 		} catch (error) {
 			console.error("Failed to start recording:", error);
-			alert(
+			await showSystemMessage(
 				error instanceof Error
 					? `Failed to start recording: ${error.message}`
 					: "Failed to start recording",

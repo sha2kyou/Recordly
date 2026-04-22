@@ -6,16 +6,29 @@
 	-webkit-app-region: no-drag;
 }
 
+:global(:root) {
+	--hud-bar-bg: hsl(var(--editor-surface) / 0.96);
+	--hud-bar-border: hsl(var(--border) / 0.72);
+	--hud-panel-bg: hsl(var(--editor-panel) / 0.96);
+	--hud-panel-border: hsl(var(--border) / 0.72);
+	--hud-surface-muted: hsl(var(--editor-surface-alt));
+	--hud-text: hsl(var(--foreground));
+	--hud-text-muted: hsl(var(--muted-foreground));
+	--hud-divider: hsl(var(--border));
+	--hud-hover-bg: hsl(var(--foreground) / 0.08);
+	--hud-accent: hsl(var(--primary));
+}
+
 .bar {
 	display: flex;
 	align-items: center;
 	gap: 10px;
 	width: max-content;
 	max-width: 1200px;
-	background: rgba(18, 18, 24, 0.97);
-	border: 1px solid rgba(255, 255, 255, 0.07);
-	border-radius: 20px;
-	padding: 11px 20px 11px 18px;
+	background: var(--hud-bar-bg);
+	border: 1px solid var(--hud-bar-border);
+	border-radius: 16px;
+	padding: 8px 16px 8px 14px;
 	overflow: visible;
 	position: relative;
 	transform-origin: center bottom;
@@ -26,7 +39,7 @@
 	display: flex;
 	align-items: center;
 	flex: 0 1 auto;
-	min-height: 46px;
+	min-height: 38px;
 	min-width: fit-content;
 	padding-right: 2px;
 }
@@ -43,20 +56,20 @@
 
 .sep {
 	width: 1px;
-	height: 26px;
-	background: #2a2a34;
-	margin: 0 6px;
+	height: 22px;
+	background: var(--hud-divider);
+	margin: 0 4px;
 	flex-shrink: 0;
 }
 
 .ib {
 	position: relative;
-	width: 40px;
-	height: 40px;
-	border-radius: 11px;
+	width: 34px;
+	height: 34px;
+	border-radius: 10px;
 	border: none;
 	background: transparent;
-	color: #6b6b78;
+	color: var(--hud-text-muted);
 	cursor: pointer;
 	display: inline-flex;
 	align-items: center;
@@ -66,12 +79,12 @@
 }
 
 .ib:hover {
-	background: rgba(255, 255, 255, 0.07);
-	color: #eeeef2;
+	background: var(--hud-hover-bg);
+	color: var(--hud-text);
 }
 
 .ibActive {
-	color: #6360f5;
+	color: var(--hud-accent);
 }
 
 .ibActive:hover {
@@ -98,16 +111,16 @@
 	position: relative;
 	display: inline-flex;
 	align-items: center;
-	gap: 7px;
-	height: 40px;
+	gap: 6px;
+	height: 34px;
 	min-width: 0;
 	max-width: 640px;
-	padding: 0 14px 0 12px;
-	border-radius: 11px;
-	border: 1px solid #2a2a34;
-	background: #1a1a22;
-	color: #eeeef2;
-	font-size: 12px;
+	padding: 0 12px 0 10px;
+	border-radius: 10px;
+	border: 1px solid var(--hud-divider);
+	background: var(--hud-surface-muted);
+	color: var(--hud-text);
+	font-size: 11px;
 	font-weight: 500;
 	cursor: pointer;
 	transition: all 0.15s ease;
@@ -115,8 +128,8 @@
 }
 
 .screenSel:hover {
-	border-color: #3e3e4c;
-	background: #20202a;
+	border-color: var(--hud-bar-border);
+	background: hsl(var(--editor-surface) / 0.92);
 }
 
 .sourceLabel {
@@ -142,8 +155,8 @@
 	width: 300px;
 	max-height: 400px;
 	overflow-y: auto;
-	background: rgba(22, 22, 30, 0.96);
-	border: 1px solid rgba(255, 255, 255, 0.07);
+	background: var(--hud-panel-bg);
+	border: 1px solid var(--hud-panel-border);
 	border-radius: 14px;
 	padding: 8px;
 	margin-top: auto;
@@ -177,14 +190,14 @@
 }
 
 .menuCard::-webkit-scrollbar-thumb {
-	background: #2a2a34;
+	background: var(--hud-divider);
 	border-radius: 2px;
 }
 
 .ddLabel {
 	font-size: 9px;
 	font-weight: 600;
-	color: #6b6b78;
+	color: var(--hud-text-muted);
 	text-transform: uppercase;
 	letter-spacing: 0.08em;
 	padding: 6px 10px 4px;
@@ -200,25 +213,25 @@
 	border: none;
 	background: transparent;
 	font-size: 12px;
-	color: #6b6b78;
+	color: var(--hud-text-muted);
 	cursor: pointer;
 	transition: all 0.12s ease;
 	text-align: left;
 }
 
 .ddItem:hover {
-	background: rgba(255, 255, 255, 0.06);
-	color: #eeeef2;
+	background: var(--hud-hover-bg);
+	color: var(--hud-text);
 }
 
 .ddItemSelected {
-	color: #6360f5;
+	color: var(--hud-accent);
 }
 
 .recBtn {
 	position: relative;
-	width: 46px;
-	height: 46px;
+	width: 40px;
+	height: 40px;
 	border-radius: 50%;
 	border: none;
 	background: #f43f5e;
@@ -245,8 +258,8 @@
 }
 
 .recDot {
-	width: 14px;
-	height: 14px;
+	width: 12px;
+	height: 12px;
 	border-radius: 50%;
 	background: #fff;
 	transition: all 0.2s ease;
@@ -264,8 +277,8 @@
 	width: 288px;
 	overflow: hidden;
 	border-radius: 24px;
-	background: rgba(22, 22, 30, 0.95);
-	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: var(--hud-panel-bg);
+	border: 1px solid var(--hud-panel-border);
 	cursor: grab;
 	touch-action: none;
 	user-select: none;
@@ -298,10 +311,10 @@
 }
 
 .micSelect {
-	color-scheme: dark;
+	color-scheme: light dark;
 }
 
 .micSelect option {
-	background-color: #1a1a22;
-	color: #eeeef2;
+	background-color: var(--hud-surface-muted);
+	color: var(--hud-text);
 }

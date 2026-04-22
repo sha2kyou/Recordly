@@ -869,6 +869,24 @@ export function registerRecordingHandlers(
     return { success: true, diagnostics: lastNativeCaptureDiagnostics }
   })
 
+  ipcMain.handle('show-system-message', async (_event, options: {
+    type?: 'none' | 'info' | 'error' | 'question' | 'warning'
+    title?: string
+    message: string
+    detail?: string
+  }) => {
+    const { response } = await dialog.showMessageBox({
+      type: options?.type ?? 'info',
+      title: options?.title ?? 'Recordly',
+      message: options?.message ?? '',
+      detail: options?.detail,
+      buttons: ['OK'],
+      defaultId: 0,
+      cancelId: 0,
+    })
+    return { success: true, response }
+  })
+
   ipcMain.handle('get-video-audio-fallback-paths', async (_event, videoPath: string) => {
     if (!videoPath) {
       return { success: true, paths: [] }

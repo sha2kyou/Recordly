@@ -935,7 +935,7 @@ export function LaunchWindow() {
 			</div>
 
 			<span
-				className={`font-mono text-xs font-semibold min-w-[52px] text-center tracking-[0.02em] ${paused ? "text-[#fbbf24]" : "text-[#eeeef2]"}`}
+				className={`font-mono text-xs font-semibold min-w-[52px] text-center tracking-[0.02em] ${paused ? "text-[#fbbf24]" : "text-foreground"}`}
 			>
 				{formatTime(elapsed)}
 			</span>
@@ -1004,7 +1004,7 @@ export function LaunchWindow() {
 						</ContentClamp>
 						<ChevronUp
 							size={10}
-							className={`text-[#6b6b78] ml-0.5 transition-transform duration-200 ${activeDropdown === "sources" ? "" : "rotate-180"}`}
+							className={`text-muted-foreground ml-0.5 transition-transform duration-200 ${activeDropdown === "sources" ? "" : "rotate-180"}`}
 						/>
 					</button>
 
@@ -1084,7 +1084,7 @@ export function LaunchWindow() {
 
 	return (
 		<div
-			className="w-full flex items-end justify-center bg-transparent overflow-visible pb-5"
+			className="w-full flex items-end justify-center bg-transparent overflow-visible pb-3"
 			style={{ height: "100vh" }}
 		>
 			<div
@@ -1132,7 +1132,7 @@ export function LaunchWindow() {
 								<>
 									{sourcesLoading ? (
 										<div className="flex items-center justify-center py-6">
-											<div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[#6b6b78]" />
+											<div className="animate-spin rounded-full h-4 w-4 border-b-2 border-muted-foreground" />
 										</div>
 									) : (
 										<>
@@ -1192,7 +1192,7 @@ export function LaunchWindow() {
 											)}
 											{screenSources.length === 0 &&
 												windowSources.length === 0 && (
-													<div className="text-center text-xs text-[#6b6b78] py-4">
+													<div className="text-center text-xs text-muted-foreground py-4">
 														{t("recording.noSourcesFound")}
 													</div>
 												)}
@@ -1235,7 +1235,7 @@ export function LaunchWindow() {
 										</DropdownItem>
 									)}
 									{!microphoneEnabled && (
-										<div className="px-3 py-2 text-xs text-[#6b6b78]">
+										<div className="px-3 py-2 text-xs text-muted-foreground">
 											{t("recording.selectMicToEnable")}
 										</div>
 									)}
@@ -1262,7 +1262,7 @@ export function LaunchWindow() {
 										);
 									})}
 									{devices.length === 0 && (
-										<div className="text-center text-xs text-[#6b6b78] py-4">
+										<div className="text-center text-xs text-muted-foreground py-4">
 											{t("recording.noMicrophonesFound")}
 										</div>
 									)}
@@ -1305,7 +1305,7 @@ export function LaunchWindow() {
 										</>
 									)}
 									{!webcamEnabled && (
-										<div className="px-3 py-2 text-xs text-[#6b6b78]">
+										<div className="px-3 py-2 text-xs text-muted-foreground">
 											{t("recording.selectWebcamToEnable")}
 										</div>
 									)}
@@ -1351,7 +1351,7 @@ export function LaunchWindow() {
 										</DropdownItem>
 									))}
 									{videoDevices.length === 0 && (
-										<div className="text-center text-xs text-[#6b6b78] py-4">
+										<div className="text-center text-xs text-muted-foreground py-4">
 											{t("recording.noWebcamsFound")}
 										</div>
 									)}
@@ -1459,7 +1459,7 @@ export function LaunchWindow() {
 								onPointerUp={handleHudBarPointerUp}
 								onPointerCancel={handleHudBarPointerUp}
 							>
-								<RxDragHandleDots2 size={14} className="text-[#6b6b78]" />
+								<RxDragHandleDots2 size={14} className="text-muted-foreground" />
 							</div>
 
 							<div className={styles.barStateViewport}>

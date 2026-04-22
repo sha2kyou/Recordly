@@ -251,6 +251,12 @@ interface Window {
 		}>;
 		openScreenRecordingPreferences: () => Promise<{ success: boolean; error?: string }>;
 		openAccessibilityPreferences: () => Promise<{ success: boolean; error?: string }>;
+		showSystemMessage: (options: {
+			type?: "none" | "info" | "error" | "question" | "warning";
+			title?: string;
+			message: string;
+			detail?: string;
+		}) => Promise<{ success: boolean; response: number }>;
 		saveExportedVideo: (
 			videoData: ArrayBuffer,
 			fileName: string,

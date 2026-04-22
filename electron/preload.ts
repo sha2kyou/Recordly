@@ -331,6 +331,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	openAccessibilityPreferences: () => {
 		return ipcRenderer.invoke("open-accessibility-preferences");
 	},
+	showSystemMessage: (options: {
+		type?: "none" | "info" | "error" | "question" | "warning";
+		title?: string;
+		message: string;
+		detail?: string;
+	}) => {
+		return ipcRenderer.invoke("show-system-message", options);
+	},
 	saveExportedVideo: (videoData: ArrayBuffer, fileName: string) => {
 		return ipcRenderer.invoke("save-exported-video", videoData, fileName);
 	},

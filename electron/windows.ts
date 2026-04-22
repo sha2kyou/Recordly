@@ -31,7 +31,7 @@ const CM_PER_INCH = 2.54;
 const HUD_EDGE_MARGIN_DIP = 16;
 const HUD_SHADOW_BLEED_DIP = 36;
 const HUD_MIN_WINDOW_WIDTH = 560;
-const HUD_COMPACT_HEIGHT = 96;
+const HUD_COMPACT_HEIGHT = 84;
 const HUD_MIN_EXPANDED_HEIGHT = 520 + HUD_SHADOW_BLEED_DIP;
 
 let hudOverlayExpanded = false;

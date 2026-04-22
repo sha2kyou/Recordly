@@ -46,20 +46,21 @@ export function CountdownOverlay() {
 			onKeyDown={(e) => e.key === "Escape" && handleCancel()}
 		>
 			<div
-				className="flex items-center justify-center rounded-3xl"
+				className="relative flex items-center justify-center rounded-full"
 				style={{
-					width: 180,
-					height: 180,
-					background: "rgba(0, 0, 0, 0.85)",
-					backdropFilter: "blur(20px)",
+					width: 152,
+					height: 152,
+					background: "rgba(14, 14, 18, 0.72)",
+					border: "1px solid rgba(255,255,255,0.18)",
+					backdropFilter: "blur(16px)",
 				}}
 			>
 				<span
-					className="text-white font-bold tabular-nums"
+					className="text-white font-semibold tabular-nums tracking-tight"
 					style={{
-						fontSize: "100px",
+						fontSize: "78px",
 						lineHeight: 1,
-						textShadow: "0 0 30px rgba(255,255,255,0.2)",
+						textShadow: "0 1px 6px rgba(0,0,0,0.35)",
 					}}
 				>
 					{countdown}
