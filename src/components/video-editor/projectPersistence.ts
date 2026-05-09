@@ -9,8 +9,17 @@ import type {
 	GifSizePreset,
 } from "@/lib/exporter";
 import { isValidMp4FrameRate } from "@/lib/exporter";
+import {
+	TEMPORAL_MOTION_BLUR_DEFAULT_SAMPLE_COUNT,
+	TEMPORAL_MOTION_BLUR_DEFAULT_SHUTTER_FRACTION,
+	TEMPORAL_MOTION_BLUR_MAX_SAMPLE_COUNT,
+	TEMPORAL_MOTION_BLUR_MAX_SHUTTER_FRACTION,
+	TEMPORAL_MOTION_BLUR_MIN_SAMPLE_COUNT,
+	TEMPORAL_MOTION_BLUR_MIN_SHUTTER_FRACTION,
+} from "@/lib/exporter/temporalMotionBlur";
 import { DEFAULT_WALLPAPER_PATH } from "@/lib/wallpapers";
 import { ASPECT_RATIOS, type AspectRatio, isCustomAspectRatio } from "@/utils/aspectRatioUtils";
+import { CURSOR_MOTION_PRESETS, resolveCursorMotionPresetId } from "./cursorMotionPresets";
 import {
 	type AnnotationRegion,
 	type AudioRegion,
@@ -29,14 +38,10 @@ import {
 	DEFAULT_CONNECTED_ZOOM_EASING,
 	DEFAULT_CONNECTED_ZOOM_GAP_MS,
 	DEFAULT_CROP_REGION,
-	DEFAULT_CURSOR_CLICK_BOUNCE,
-	DEFAULT_CURSOR_CLICK_BOUNCE_DURATION,
-	DEFAULT_CURSOR_MOTION_BLUR,
-	DEFAULT_CURSOR_SIZE,
-	DEFAULT_CURSOR_SMOOTHING,
 	DEFAULT_CURSOR_STYLE,
 	DEFAULT_CURSOR_SWAY,
 	DEFAULT_FIGURE_DATA,
+	DEFAULT_PADDING,
 	DEFAULT_PLAYBACK_SPEED,
 	DEFAULT_WEBCAM_CORNER_RADIUS,
 	DEFAULT_WEBCAM_MARGIN,
@@ -49,27 +54,36 @@ import {
 	DEFAULT_WEBCAM_SIZE,
 	DEFAULT_WEBCAM_TIME_OFFSET_MS,
 	DEFAULT_ZOOM_DEPTH,
-	DEFAULT_ZOOM_IN_DURATION_MS,
 	DEFAULT_ZOOM_IN_EASING,
 	DEFAULT_ZOOM_IN_OVERLAP_MS,
 	DEFAULT_ZOOM_MOTION_BLUR,
-	DEFAULT_ZOOM_OUT_DURATION_MS,
+	DEFAULT_ZOOM_MOTION_BLUR_TUNING,
 	DEFAULT_ZOOM_OUT_EASING,
+	DEFAULT_ZOOM_SMOOTHNESS,
 	getDefaultCaptionFontFamily,
+	type Padding,
 	type SpeedRegion,
 	type TrimRegion,
 	type WebcamOverlaySettings,
+	type ZoomMotionBlurTuning,
 	type ZoomRegion,
 	type ZoomTransitionEasing,
 } from "./types";
+import { normalizeWebcamCropRegion } from "./webcamOverlay";
 
 export const PROJECT_VERSION = 1;
+
+const DEFAULT_MOTION_PRESET = CURSOR_MOTION_PRESETS.focused;
 
 export interface ProjectEditorState {
 	wallpaper: string;
 	shadowIntensity: number;
 	backgroundBlur: number;
 	zoomMotionBlur: number;
+	zoomMotionBlurTuning: ZoomMotionBlurTuning;
+	zoomTemporalMotionBlur: number;
+	zoomMotionBlurSampleCount: number | null;
+	zoomMotionBlurShutterFraction: number | null;
 	connectZooms: boolean;
 	zoomInDurationMs: number;
 	zoomInOverlapMs: number;
@@ -84,6 +98,12 @@ export interface ProjectEditorState {
 	cursorStyle: CursorStyle;
 	cursorSize: number;
 	cursorSmoothing: number;
+	cursorSpringStiffnessMultiplier: number;
+	cursorSpringDampingMultiplier: number;
+	cursorSpringMassMultiplier: number;
+	cameraSpringStiffnessMultiplier: number;
+	cameraSpringDampingMultiplier: number;
+	cameraSpringMassMultiplier: number;
 	zoomSmoothness: number;
 	zoomClassicMode: boolean;
 	cursorMotionBlur: number;
@@ -91,13 +111,15 @@ export interface ProjectEditorState {
 	cursorClickBounceDuration: number;
 	cursorSway: number;
 	borderRadius: number;
-	padding: number;
+	padding: Padding;
 	/** Selected frame ID (e.g. "recordly.frames/browser-dark"), or null for none */
 	frame: string | null;
 	cropRegion: CropRegion;
 	zoomRegions: ZoomRegion[];
 	trimRegions: TrimRegion[];
 	clipRegions: ClipRegion[];
+	autoFullTrackClipId?: string | null;
+	autoFullTrackClipEndMs?: number | null;
 	speedRegions: SpeedRegion[];
 	annotationRegions: AnnotationRegion[];
 	audioRegions: AudioRegion[];
@@ -152,7 +174,7 @@ export function normalizeExportPipelineModel(value: unknown): ExportPipelineMode
 		return value;
 	}
 
-	return "legacy";
+	return "modern";
 }
 
 export function normalizeExportMp4FrameRate(value: unknown): ExportMp4FrameRate {
@@ -289,6 +311,27 @@ export function validateProjectData(candidate: unknown): candidate is EditorProj
 }
 
 export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): ProjectEditorState {
+	const normalizeTemporalBlurSampleCount = (value: unknown): number => {
+		if (!isFiniteNumber(value)) {
+			return TEMPORAL_MOTION_BLUR_DEFAULT_SAMPLE_COUNT;
+		}
+
+		const roundedValue = Math.round(value);
+		const clampedValue = clamp(
+			roundedValue,
+			TEMPORAL_MOTION_BLUR_MIN_SAMPLE_COUNT,
+			TEMPORAL_MOTION_BLUR_MAX_SAMPLE_COUNT,
+		);
+
+		if (clampedValue % 2 === 1) {
+			return clampedValue;
+		}
+
+		return clampedValue >= TEMPORAL_MOTION_BLUR_MAX_SAMPLE_COUNT
+			? clampedValue - 1
+			: clampedValue + 1;
+	};
+
 	const validAspectRatios = new Set<AspectRatio>(ASPECT_RATIOS);
 	const legacyMotionBlurEnabled = (editor as Partial<{ motionBlurEnabled: boolean }>)
 		.motionBlurEnabled;
@@ -300,6 +343,40 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		: legacyMotionBlurEnabled
 			? 0.35
 			: DEFAULT_ZOOM_MOTION_BLUR;
+	const rawZoomMotionBlurTuning =
+		(editor as Partial<ProjectEditorState>).zoomMotionBlurTuning &&
+		typeof (editor as Partial<ProjectEditorState>).zoomMotionBlurTuning === "object"
+			? ((editor as Partial<ProjectEditorState>)
+					.zoomMotionBlurTuning as Partial<ZoomMotionBlurTuning>)
+			: {};
+	const normalizedZoomMotionBlurTuning: ZoomMotionBlurTuning = {
+		panVelocityThreshold: isFiniteNumber(rawZoomMotionBlurTuning.panVelocityThreshold)
+			? clamp(rawZoomMotionBlurTuning.panVelocityThreshold, 0, 240)
+			: DEFAULT_ZOOM_MOTION_BLUR_TUNING.panVelocityThreshold,
+		zoomVelocityThreshold: isFiniteNumber(rawZoomMotionBlurTuning.zoomVelocityThreshold)
+			? clamp(rawZoomMotionBlurTuning.zoomVelocityThreshold, 0, 0.4)
+			: DEFAULT_ZOOM_MOTION_BLUR_TUNING.zoomVelocityThreshold,
+		maxDirectionalBlurPx: isFiniteNumber(rawZoomMotionBlurTuning.maxDirectionalBlurPx)
+			? clamp(rawZoomMotionBlurTuning.maxDirectionalBlurPx, 0, 32)
+			: DEFAULT_ZOOM_MOTION_BLUR_TUNING.maxDirectionalBlurPx,
+		maxRadialBlurStrength: isFiniteNumber(rawZoomMotionBlurTuning.maxRadialBlurStrength)
+			? clamp(rawZoomMotionBlurTuning.maxRadialBlurStrength, 0, 0.5)
+			: DEFAULT_ZOOM_MOTION_BLUR_TUNING.maxRadialBlurStrength,
+		panResponsePerSecond: isFiniteNumber(rawZoomMotionBlurTuning.panResponsePerSecond)
+			? clamp(rawZoomMotionBlurTuning.panResponsePerSecond, 1, 30)
+			: DEFAULT_ZOOM_MOTION_BLUR_TUNING.panResponsePerSecond,
+		zoomResponsePerSecond: isFiniteNumber(rawZoomMotionBlurTuning.zoomResponsePerSecond)
+			? clamp(rawZoomMotionBlurTuning.zoomResponsePerSecond, 1, 30)
+			: DEFAULT_ZOOM_MOTION_BLUR_TUNING.zoomResponsePerSecond,
+		zoomSafeZoneRadiusPx: isFiniteNumber(rawZoomMotionBlurTuning.zoomSafeZoneRadiusPx)
+			? clamp(rawZoomMotionBlurTuning.zoomSafeZoneRadiusPx, 0, 80)
+			: DEFAULT_ZOOM_MOTION_BLUR_TUNING.zoomSafeZoneRadiusPx,
+	};
+	const normalizedZoomTemporalMotionBlur = isFiniteNumber(
+		(editor as Partial<ProjectEditorState>).zoomTemporalMotionBlur,
+	)
+		? clamp((editor as Partial<ProjectEditorState>).zoomTemporalMotionBlur as number, 0, 2)
+		: normalizedZoomMotionBlur;
 	const normalizedBackgroundBlur = isFiniteNumber(
 		(editor as Partial<ProjectEditorState>).backgroundBlur,
 	)
@@ -307,15 +384,27 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		: legacyShowBlur
 			? 2
 			: 0;
+	const normalizedZoomMotionBlurSampleCount = normalizeTemporalBlurSampleCount(
+		(editor as Partial<ProjectEditorState>).zoomMotionBlurSampleCount,
+	);
+	const normalizedZoomMotionBlurShutterFraction = isFiniteNumber(
+		(editor as Partial<ProjectEditorState>).zoomMotionBlurShutterFraction,
+	)
+		? clamp(
+				(editor as Partial<ProjectEditorState>).zoomMotionBlurShutterFraction as number,
+				TEMPORAL_MOTION_BLUR_MIN_SHUTTER_FRACTION,
+				TEMPORAL_MOTION_BLUR_MAX_SHUTTER_FRACTION,
+			)
+		: TEMPORAL_MOTION_BLUR_DEFAULT_SHUTTER_FRACTION;
 	const normalizedZoomInDurationMs = isFiniteNumber(editor.zoomInDurationMs)
 		? clamp(editor.zoomInDurationMs, 60, 4000)
-		: DEFAULT_ZOOM_IN_DURATION_MS;
+		: DEFAULT_MOTION_PRESET.zoomInDurationMs;
 	const normalizedZoomInOverlapMs = isFiniteNumber(editor.zoomInOverlapMs)
 		? clamp(editor.zoomInOverlapMs, 0, normalizedZoomInDurationMs)
 		: DEFAULT_ZOOM_IN_OVERLAP_MS;
 	const normalizedZoomOutDurationMs = isFiniteNumber(editor.zoomOutDurationMs)
 		? clamp(editor.zoomOutDurationMs, 60, 4000)
-		: DEFAULT_ZOOM_OUT_DURATION_MS;
+		: DEFAULT_MOTION_PRESET.zoomOutDurationMs;
 	const normalizedConnectedZoomGapMs = isFiniteNumber(editor.connectedZoomGapMs)
 		? clamp(editor.connectedZoomGapMs, 0, 5000)
 		: DEFAULT_CONNECTED_ZOOM_GAP_MS;
@@ -410,6 +499,12 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 					};
 				})
 		: [];
+
+	const normalizedAutoFullTrackClipId =
+		typeof editor.autoFullTrackClipId === "string" ? editor.autoFullTrackClipId : null;
+	const normalizedAutoFullTrackClipEndMs = isFiniteNumber(editor.autoFullTrackClipEndMs)
+		? Math.round(editor.autoFullTrackClipEndMs)
+		: null;
 
 	const normalizedSpeedRegions: SpeedRegion[] = Array.isArray(editor.speedRegions)
 		? editor.speedRegions
@@ -696,16 +791,62 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 	)
 		? (webcam as Partial<{ zoomScaleEffect: number }>).zoomScaleEffect
 		: null;
+	const normalizedCursorStyle =
+		typeof editor.cursorStyle === "string" && editor.cursorStyle.trim().length > 0
+			? editor.cursorStyle === "mono"
+				? "tahoe-inverted"
+				: editor.cursorStyle
+			: DEFAULT_CURSOR_STYLE;
+	const normalizedMotionValues = {
+		zoomInDurationMs: normalizedZoomInDurationMs,
+		zoomOutDurationMs: normalizedZoomOutDurationMs,
+		cursorSize: isFiniteNumber(editor.cursorSize)
+			? clamp(editor.cursorSize, 0.5, 10)
+			: DEFAULT_MOTION_PRESET.cursorSize,
+		cursorSmoothing: isFiniteNumber(editor.cursorSmoothing)
+			? clamp(editor.cursorSmoothing, 0, 2)
+			: DEFAULT_MOTION_PRESET.cursorSmoothing,
+		cursorSpringStiffnessMultiplier: isFiniteNumber(editor.cursorSpringStiffnessMultiplier)
+			? clamp(editor.cursorSpringStiffnessMultiplier, 0.25, 3)
+			: DEFAULT_MOTION_PRESET.cursorSpringStiffnessMultiplier,
+		cursorSpringDampingMultiplier: isFiniteNumber(editor.cursorSpringDampingMultiplier)
+			? clamp(editor.cursorSpringDampingMultiplier, 0.25, 3)
+			: DEFAULT_MOTION_PRESET.cursorSpringDampingMultiplier,
+		cursorSpringMassMultiplier: isFiniteNumber(editor.cursorSpringMassMultiplier)
+			? clamp(editor.cursorSpringMassMultiplier, 0.25, 3)
+			: DEFAULT_MOTION_PRESET.cursorSpringMassMultiplier,
+		cursorMotionBlur: isFiniteNumber((editor as Partial<ProjectEditorState>).cursorMotionBlur)
+			? clamp((editor as Partial<ProjectEditorState>).cursorMotionBlur as number, 0, 2)
+			: DEFAULT_MOTION_PRESET.cursorMotionBlur,
+		cursorClickBounce: isFiniteNumber((editor as Partial<ProjectEditorState>).cursorClickBounce)
+			? clamp((editor as Partial<ProjectEditorState>).cursorClickBounce as number, 0, 5)
+			: DEFAULT_MOTION_PRESET.cursorClickBounce,
+		cursorClickBounceDuration: isFiniteNumber(
+			(editor as Partial<ProjectEditorState>).cursorClickBounceDuration,
+		)
+			? clamp(
+					(editor as Partial<ProjectEditorState>).cursorClickBounceDuration as number,
+					60,
+					500,
+				)
+			: DEFAULT_MOTION_PRESET.cursorClickBounceDuration,
+	};
+	const normalizedMotionPreset =
+		CURSOR_MOTION_PRESETS[resolveCursorMotionPresetId(normalizedMotionValues)];
 
 	return {
 		wallpaper: typeof editor.wallpaper === "string" ? editor.wallpaper : DEFAULT_WALLPAPER_PATH,
 		shadowIntensity: typeof editor.shadowIntensity === "number" ? editor.shadowIntensity : 0.67,
 		backgroundBlur: normalizedBackgroundBlur,
 		zoomMotionBlur: normalizedZoomMotionBlur,
+		zoomMotionBlurTuning: normalizedZoomMotionBlurTuning,
+		zoomTemporalMotionBlur: normalizedZoomTemporalMotionBlur,
+		zoomMotionBlurSampleCount: normalizedZoomMotionBlurSampleCount,
+		zoomMotionBlurShutterFraction: normalizedZoomMotionBlurShutterFraction,
 		connectZooms: typeof editor.connectZooms === "boolean" ? editor.connectZooms : true,
-		zoomInDurationMs: normalizedZoomInDurationMs,
+		zoomInDurationMs: normalizedMotionPreset.zoomInDurationMs,
 		zoomInOverlapMs: normalizedZoomInOverlapMs,
-		zoomOutDurationMs: normalizedZoomOutDurationMs,
+		zoomOutDurationMs: normalizedMotionPreset.zoomOutDurationMs,
 		connectedZoomGapMs: normalizedConnectedZoomGapMs,
 		connectedZoomDurationMs: normalizedConnectedZoomDurationMs,
 		zoomInEasing: normalizeZoomTransitionEasing(editor.zoomInEasing, DEFAULT_ZOOM_IN_EASING),
@@ -716,41 +857,55 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		),
 		showCursor: typeof editor.showCursor === "boolean" ? editor.showCursor : true,
 		loopCursor: typeof editor.loopCursor === "boolean" ? editor.loopCursor : false,
-		cursorStyle:
-			typeof editor.cursorStyle === "string" && editor.cursorStyle.trim().length > 0
-				? editor.cursorStyle
-				: DEFAULT_CURSOR_STYLE,
-		cursorSize: isFiniteNumber(editor.cursorSize)
-			? clamp(editor.cursorSize, 0.5, 10)
-			: DEFAULT_CURSOR_SIZE,
-		cursorSmoothing: isFiniteNumber(editor.cursorSmoothing)
-			? clamp(editor.cursorSmoothing, 0, 2)
-			: DEFAULT_CURSOR_SMOOTHING,
-		zoomSmoothness: isFiniteNumber(editor.zoomSmoothness)
-			? clamp(editor.zoomSmoothness, 0, 1)
-			: 0.5,
+		cursorStyle: normalizedCursorStyle,
+		cursorSize: normalizedMotionPreset.cursorSize,
+		cursorSmoothing: normalizedMotionPreset.cursorSmoothing,
+		cursorSpringStiffnessMultiplier: normalizedMotionPreset.cursorSpringStiffnessMultiplier,
+		cursorSpringDampingMultiplier: normalizedMotionPreset.cursorSpringDampingMultiplier,
+		cursorSpringMassMultiplier: normalizedMotionPreset.cursorSpringMassMultiplier,
+		cameraSpringStiffnessMultiplier: isFiniteNumber(editor.cameraSpringStiffnessMultiplier)
+			? clamp(editor.cameraSpringStiffnessMultiplier, 0.25, 3)
+			: 1,
+		cameraSpringDampingMultiplier: isFiniteNumber(editor.cameraSpringDampingMultiplier)
+			? clamp(editor.cameraSpringDampingMultiplier, 0.25, 3)
+			: 1.13,
+		cameraSpringMassMultiplier: isFiniteNumber(editor.cameraSpringMassMultiplier)
+			? clamp(editor.cameraSpringMassMultiplier, 0.25, 3)
+			: 1.12,
+		zoomSmoothness: DEFAULT_ZOOM_SMOOTHNESS,
 		zoomClassicMode:
 			typeof editor.zoomClassicMode === "boolean" ? editor.zoomClassicMode : false,
-		cursorMotionBlur: isFiniteNumber((editor as Partial<ProjectEditorState>).cursorMotionBlur)
-			? clamp((editor as Partial<ProjectEditorState>).cursorMotionBlur as number, 0, 2)
-			: DEFAULT_CURSOR_MOTION_BLUR,
-		cursorClickBounce: isFiniteNumber((editor as Partial<ProjectEditorState>).cursorClickBounce)
-			? clamp((editor as Partial<ProjectEditorState>).cursorClickBounce as number, 0, 5)
-			: DEFAULT_CURSOR_CLICK_BOUNCE,
-		cursorClickBounceDuration: isFiniteNumber(
-			(editor as Partial<ProjectEditorState>).cursorClickBounceDuration,
-		)
-			? clamp(
-					(editor as Partial<ProjectEditorState>).cursorClickBounceDuration as number,
-					60,
-					500,
-				)
-			: DEFAULT_CURSOR_CLICK_BOUNCE_DURATION,
+		cursorMotionBlur: normalizedMotionPreset.cursorMotionBlur,
+		cursorClickBounce: normalizedMotionPreset.cursorClickBounce,
+		cursorClickBounceDuration: normalizedMotionPreset.cursorClickBounceDuration,
 		cursorSway: isFiniteNumber((editor as Partial<ProjectEditorState>).cursorSway)
 			? clamp((editor as Partial<ProjectEditorState>).cursorSway as number, 0, 2)
 			: DEFAULT_CURSOR_SWAY,
 		borderRadius: typeof editor.borderRadius === "number" ? editor.borderRadius : 12.5,
-		padding: isFiniteNumber(editor.padding) ? clamp(editor.padding, 0, 100) : 20,
+		padding: (() => {
+			const p = editor.padding;
+			if (p && typeof p === "object") {
+				const linked = typeof p.linked === "boolean" ? p.linked : true;
+				const top = isFiniteNumber(p.top) ? clamp(p.top, 0, 100) : DEFAULT_PADDING.top;
+				if (linked) {
+					return { top, bottom: top, left: top, right: top, linked: true };
+				}
+				return {
+					top,
+					bottom: isFiniteNumber(p.bottom)
+						? clamp(p.bottom, 0, 100)
+						: DEFAULT_PADDING.bottom,
+					left: isFiniteNumber(p.left) ? clamp(p.left, 0, 100) : DEFAULT_PADDING.left,
+					right: isFiniteNumber(p.right) ? clamp(p.right, 0, 100) : DEFAULT_PADDING.right,
+					linked: false,
+				};
+			}
+			if (typeof p === "number" && isFiniteNumber(p)) {
+				const val = clamp(p, 0, 100);
+				return { top: val, bottom: val, left: val, right: val, linked: true };
+			}
+			return { ...DEFAULT_PADDING };
+		})(),
 		frame: typeof editor.frame === "string" ? editor.frame : null,
 		cropRegion: {
 			x: cropX,
@@ -761,6 +916,8 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		zoomRegions: normalizedZoomRegions,
 		trimRegions: normalizedTrimRegions,
 		clipRegions: normalizedClipRegions,
+		autoFullTrackClipId: normalizedAutoFullTrackClipId,
+		autoFullTrackClipEndMs: normalizedAutoFullTrackClipEndMs,
 		speedRegions: normalizedSpeedRegions,
 		annotationRegions: normalizedAnnotationRegions,
 		audioRegions: normalizedAudioRegions,
@@ -774,6 +931,7 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 			sourcePath: webcamSourcePath,
 			mirror:
 				typeof webcam.mirror === "boolean" ? webcam.mirror : DEFAULT_WEBCAM_OVERLAY.mirror,
+			cropRegion: normalizeWebcamCropRegion(webcam.cropRegion),
 			positionPreset:
 				webcam.positionPreset === "top-left" ||
 				webcam.positionPreset === "top-center" ||
@@ -867,9 +1025,7 @@ export function createProjectData(
 ): EditorProjectData {
 	return {
 		version: PROJECT_VERSION,
-		...(typeof projectId === "string" && projectId.trim().length > 0
-			? { projectId }
-			: {}),
+		...(typeof projectId === "string" && projectId.trim().length > 0 ? { projectId } : {}),
 		videoPath,
 		editor,
 	};

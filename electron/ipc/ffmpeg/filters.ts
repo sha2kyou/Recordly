@@ -1,5 +1,8 @@
 import type { AudioSyncAdjustment, PauseSegment } from "../types";
 
+const MAX_AUDIO_SYNC_DELAY_MS = 15000;
+export const ATEMPO_FILTER_EPSILON = 0.0005;
+
 export function buildAtempoFilters(tempoRatio: number): string[] {
 	if (!Number.isFinite(tempoRatio) || tempoRatio <= 0) {
 		return [];
@@ -18,7 +21,7 @@ export function buildAtempoFilters(tempoRatio: number): string[] {
 		remaining /= 2.0;
 	}
 
-	if (Math.abs(remaining - 1) > 0.0005) {
+	if (Math.abs(remaining - 1) > ATEMPO_FILTER_EPSILON) {
 		filters.push(`atempo=${remaining.toFixed(6)}`);
 	}
 
@@ -44,14 +47,55 @@ export function getAudioSyncAdjustment(
 		return { mode: "none", delayMs: 0, tempoRatio: 1, durationDeltaMs };
 	}
 
+	// When the recorded audio runs longer than the video, globally speeding it
+	// up can pull speech ahead of the picture. Keep the track anchored at the
+	// start instead and let the downstream mux path trim any trailing overrun.
+	if (durationDeltaMs < 0) {
+		return { mode: "none", delayMs: 0, tempoRatio: 1, durationDeltaMs };
+	}
+
 	const tempoRatio = Math.max(0.5, Math.min(2, audioDuration / videoDuration));
 	const relativeDelta = absDeltaMs / Math.max(videoDuration * 1000, 1);
 
-	if (relativeDelta <= 0.03 || absDeltaMs <= 1500 || durationDeltaMs < 0) {
+	if (relativeDelta <= 0.03 || absDeltaMs <= 1500) {
 		return { mode: "tempo", delayMs: 0, tempoRatio, durationDeltaMs };
 	}
 
+	if (durationDeltaMs > MAX_AUDIO_SYNC_DELAY_MS) {
+		return { mode: "pad", delayMs: 0, tempoRatio: 1, durationDeltaMs };
+	}
+
 	return { mode: "delay", delayMs: durationDeltaMs, tempoRatio: 1, durationDeltaMs };
+}
+
+export function applyRecordedAudioStartDelay(
+	adjustment: AudioSyncAdjustment,
+	recordedStartDelayMs?: number | null,
+): AudioSyncAdjustment {
+	if (!Number.isFinite(recordedStartDelayMs) || (recordedStartDelayMs ?? 0) < 0) {
+		return adjustment;
+	}
+
+	const delayMs = Math.max(0, Math.round(recordedStartDelayMs ?? 0));
+	if (delayMs > 20) {
+		return {
+			mode: "delay",
+			delayMs,
+			tempoRatio: 1,
+			durationDeltaMs: adjustment.durationDeltaMs,
+		};
+	}
+
+	if (adjustment.mode !== "delay" && adjustment.mode !== "pad") {
+		return adjustment;
+	}
+
+	return {
+		mode: "pad",
+		delayMs: 0,
+		tempoRatio: 1,
+		durationDeltaMs: adjustment.durationDeltaMs,
+	};
 }
 
 export function appendSyncedAudioFilter(
@@ -59,15 +103,38 @@ export function appendSyncedAudioFilter(
 	inputLabel: string,
 	outputLabel: string,
 	adjustment: AudioSyncAdjustment,
+	options: number | { volumeMultiplier?: number; preFilters?: string[] } = 1,
 ) {
-	const filters: string[] = [];
+	const volumeMultiplier =
+		typeof options === "number" ? options : (options.volumeMultiplier ?? 1);
+	const preFilters = typeof options === "number" ? [] : (options.preFilters ?? []);
+	const filters: string[] = [...preFilters];
 
 	if (adjustment.mode === "delay" && adjustment.delayMs > 0) {
 		filters.push(`adelay=${adjustment.delayMs}|${adjustment.delayMs}`);
 	}
 
+	if (
+		adjustment.mode === "delay" &&
+		adjustment.durationDeltaMs > adjustment.delayMs + 20
+	) {
+		filters.push(`apad=pad_dur=${formatFfmpegSeconds(adjustment.durationDeltaMs - adjustment.delayMs)}`);
+	}
+
 	if (adjustment.mode === "tempo") {
 		filters.push(...buildAtempoFilters(adjustment.tempoRatio));
+	}
+
+	if (adjustment.mode === "pad" && adjustment.durationDeltaMs > 0) {
+		filters.push(`apad=pad_dur=${formatFfmpegSeconds(adjustment.durationDeltaMs)}`);
+	}
+
+	if (
+		Number.isFinite(volumeMultiplier) &&
+		volumeMultiplier > 0 &&
+		Math.abs(volumeMultiplier - 1) > 0.0005
+	) {
+		filters.push(`volume=${volumeMultiplier.toFixed(3)}`);
 	}
 
 	filters.push("aresample=async=1:first_pts=0", "asetpts=PTS-STARTPTS");
@@ -78,9 +145,7 @@ export function formatFfmpegSeconds(milliseconds: number): string {
 	return (milliseconds / 1000).toFixed(3);
 }
 
-export function normalizePauseSegments(
-	pauseSegments: PauseSegment[] | undefined,
-): PauseSegment[] {
+export function normalizePauseSegments(pauseSegments: PauseSegment[] | undefined): PauseSegment[] {
 	if (!Array.isArray(pauseSegments) || pauseSegments.length === 0) {
 		return [];
 	}

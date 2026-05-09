@@ -1,12 +1,12 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { access } from "node:fs/promises";
-import type { SelectedSource } from "../types";
+import fs from "node:fs/promises";
+import { resolveLinuxWindowBounds } from "../cursor/bounds";
 import {
 	ffmpegCaptureOutputBuffer,
 } from "../state";
+import type { SelectedSource } from "../types";
 import { getScreen, parseWindowId } from "../utils";
 import { resolveWindowsCaptureDisplay } from "../windowsCaptureSelection";
-import { resolveLinuxWindowBounds } from "../cursor/bounds";
 
 export function getDisplayBoundsForSource(source: SelectedSource) {
 	return resolveWindowsCaptureDisplay(
@@ -14,6 +14,14 @@ export function getDisplayBoundsForSource(source: SelectedSource) {
 		getScreen().getAllDisplays(),
 		getScreen().getPrimaryDisplay(),
 	).bounds;
+}
+
+export function getDisplayWorkAreaForSource(source: SelectedSource) {
+	const allDisplays = getScreen().getAllDisplays();
+	const primaryDisplay = getScreen().getPrimaryDisplay();
+	const { displayId } = resolveWindowsCaptureDisplay(source, allDisplays, primaryDisplay);
+	const matched = allDisplays.find((d) => d.id === displayId) ?? primaryDisplay;
+	return matched.workArea;
 }
 
 export async function buildFfmpegCaptureArgs(source: SelectedSource, outputPath: string) {
@@ -167,7 +175,7 @@ export function waitForFfmpegCaptureStop(process: ChildProcessWithoutNullStreams
 			cleanup();
 
 			try {
-				await access(outputPath);
+				await fs.access(outputPath);
 				if (code === 0 || code === null) {
 					resolve(outputPath);
 					return;

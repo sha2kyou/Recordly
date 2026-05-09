@@ -1,9 +1,7 @@
-# Recordly
-
 语言: [EN](README.md) | 简中
 
 <p align="center">
-  <img src="https://i.postimg.cc/tRnL8gHp/Frame-5.png" width="220" alt="Recordly logo">
+  <img width="220" alt="Recordly logo" src="https://github.com/user-attachments/assets/082bb4b0-5fc5-4e9f-abda-55611fd6aded" />
 </p>
 
 <p align="center">
@@ -11,20 +9,19 @@
   <img src="https://img.shields.io/badge/open%20source-AGPL3.0-2563eb?style=for-the-badge" alt="AGPL 3.0 license" />
 </p>
 
-### 制作精致、专业级的屏幕录制内容。
-[Recordly](https://www.recordly.dev) 是一款**开源屏幕录制器**和编辑器，适合制作**操作讲解、演示、产品视频**等内容。
+### 无需额外剪辑，也能做出精致的屏幕录制。
+[Recordly](https://www.recordly.dev) 是一款**开源屏幕录制器**和编辑器，适合制作**操作讲解、演示、产品视频**等内容。  
+**欢迎提交 PR。** [赞助](https://ko-fi.com/webadderall/goal?g=0)
 
-**欢迎贡献。** [赞助](https://ko-fi.com/webadderall/goal?g=0)
-
-https://github.com/user-attachments/assets/1446cd12-c053-4b9c-b49f-d9c93db77fc4
+https://github.com/user-attachments/assets/9b66c71d-ac97-49ff-a0c9-63ac26edf2e4
 
 ---
 
 ## Recordly 是什么？
 
-Recordly 是一款桌面应用，用于录制并编辑屏幕内容，内置面向演示视频的动态呈现工具。你不需要先把原始素材交给动效设计师去补缩放、光标润色或样式化背景，Recordly 可以在一个地方免费完成整套流程。
+Recordly 是一款桌面应用，用于录制并编辑屏幕内容，内置面向演示视频的动态呈现工具。你不需要再把原始素材交给动效设计师去补缩放、光标润色或样式化背景，Recordly 可以在一个地方免费完成整套流程。
 
-Recordly 运行于：
+Recordly 支持：
 
 - **macOS** 14.0+
 - **Windows** 10 Build 19041+
@@ -32,7 +29,7 @@ Recordly 运行于：
 
 平台说明：
 
-- **macOS** 使用原生的基于 ScreenCaptureKit 的捕获辅助程序。
+- **macOS** 使用基于 ScreenCaptureKit 的原生捕获辅助程序。
 - **Windows** 在支持的系统版本上使用原生 Windows Graphics Capture（WGC）辅助程序，并支持原生 WASAPI 音频。
 - **Linux** 通过 Electron 捕获 API 录制。目前 Linux 还不支持隐藏真实光标。
 
@@ -44,26 +41,26 @@ Recordly 运行于：
 Recordly 可以根据操作自动强调重点区域，平滑光标运动，添加动态效果，并将最终画面放进带有壁纸、纯色、渐变、模糊、留白和阴影的样式化边框中。
 
 <p>
-  <img src="./feature1.gif" width="450" alt="Recordly cursor and zoom demo video">
+  <img src="./docs/media/feature1.gif" width="450" alt="Recordly cursor and zoom demo video">
 </p>
 
 ## 动态摄像头气泡叠加
 你可以把摄像头素材作为气泡叠加层加入画面，使用预设位置或自定义坐标摆放，支持镜像、阴影和圆角调节，也可以让它跟随缩放变化，保证动态镜头里整体视觉更协调。
 
 <p>
-  <img src="./feature2.gif" width="450" alt="Recordly webcam overlay demo video">
+  <img src="./docs/media/feature2.gif" width="450" alt="Recordly webcam overlay demo video">
 </p>
 
 ## 为演示设计的时间线编辑
 使用拖拽式时间线工具处理缩放、裁剪、变速区域、注释、额外音频区域以及裁切感知编辑，并将工作保存为 `.recordly` 项目文件，之后随时回来继续编辑。
 
 <p>
-  <img src="./feature3.png" width="450" alt="Recordly timeline editor screenshot">
+  <img width="450" alt="timeline editor" src="https://github.com/user-attachments/assets/3692bd8f-7b8d-4a93-b696-d17c828487ea" />
 </p>
 
 ## 扩展与市场
 
-Recordly 拥有一个社区驱动的扩展系统。任何人都可以构建和发布扩展来为 Recordly 添加新功能——光标点击音效、设备边框、浏览器模拟外壳、壁纸、渲染钩子、设置面板等等。
+Recordly 拥有一个社区驱动的扩展系统。任何人都可以构建和发布扩展来为 Recordly 添加新功能，例如光标点击音效、设备边框、浏览器模拟外壳、壁纸、渲染钩子、设置面板等等。
 
 浏览并安装社区扩展：[Recordly 扩展市场](https://marketplace.recordly.dev/extensions)。
 
@@ -152,11 +149,11 @@ Recordly 拥有一个社区驱动的扩展系统。任何人都可以构建和�
 # 截图
 
 <p align="center">
-  <img src="https://i.postimg.cc/CKxm8DRs/Screenshot-2026-03-20-at-7-07-22-pm.png" width="700" alt="Recordly editor screenshot">
+  <img src="https://i.postimg.cc/8CrQtGJf/Screenshot-2026-04-30-at-5-11-52-pm.png" width="700" alt="Recordly recording interface screenshot">
 </p>
 
 <p align="center">
-  <img src="https://i.postimg.cc/hjwdYRyV/Screenshot-2026-03-20-at-1-53-57-pm.png" width="700" alt="Recordly recording interface screenshot">
+  <img src="https://i.postimg.cc/pLSMfrTM/Screenshot-2026-04-30-at-5-11-45-pm.png" width="700" alt="Recordly editor screenshot">
 </p>
 
 <p align="center">
@@ -171,7 +168,7 @@ Recordly 拥有一个社区驱动的扩展系统。任何人都可以构建和�
 
 预构建发布版本请见：
 
-https://github.com/webadderall/Recordly/releases
+https://github.com/webadderallorg/Recordly/releases
 
 ---
 
@@ -204,7 +201,7 @@ sudo apt install build-essential cmake libx11-dev libxtst-dev libxrandr-dev libx
 ### 步骤
 
 ```bash
-git clone https://github.com/webadderall/Recordly.git recordly
+git clone https://github.com/webadderallorg/Recordly.git recordly
 cd recordly
 npm install
 npm run dev
@@ -320,12 +317,12 @@ Recordly 将平台相关的捕获层与基于渲染器的编辑、导出流程�
 
 **捕获**
 - Electron 负责录制流程和应用级控制
-- macOS 使用原生的 ScreenCaptureKit 辅助程序
-- Windows 在可用时使用原生 Windows Graphics Capture（WGC）以及原生音频辅助程序
+- macOS 使用原生 ScreenCaptureKit 辅助程序
+- Windows 在可用时使用原生 Windows Graphics Capture（WGC）辅助程序和原生音频辅助程序
 
 **编辑**
 - 时间线区域定义缩放、裁剪、变速、音频叠加和注释
-- 光标和摄像头样式由编辑器状态统一控制
+- 光标和摄像头样式都保存在编辑器状态中
 
 **渲染**
 - 场景合成由 **PixiJS** 负责
@@ -360,7 +357,7 @@ Recordly 将平台相关的捕获层与基于渲染器的编辑、导出流程�
 
 问题反馈和功能建议：
 
-https://github.com/webadderall/Recordly/issues
+https://github.com/webadderallorg/Recordly/issues
 
 欢迎提交 Pull Request。
 
@@ -374,6 +371,8 @@ https://github.com/webadderall/Recordly/issues
 - buildwithfur
 - Tobias
 - Anonymous Supporter
+- Tandava Appadoo
+- Digitalfastmind
 - Roberto Marcelino
 - Rajan RK
 - Francesco
@@ -388,13 +387,11 @@ Recordly 基于 **AGPL 3.0** 发布。
 
 ---
 
----
-
 # 致谢
 
 ## 鸣谢
 
-Recordly 最初是从 [OpenScreen](https://github.com/siddharthvaddem/openscreen) 分叉而来，之后已逐步演变为不同的项目。
+Recordly 最初是从 [OpenScreen](https://github.com/siddharthvaddem/openscreen) 分叉而来，之后已逐步演变为一个不同的项目。
 
 创建者  
 [@webadderall](https://x.com/webadderall)

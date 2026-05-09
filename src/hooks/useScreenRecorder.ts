@@ -2,7 +2,12 @@ import { fixWebmDuration } from "@fix-webm-duration/fix";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { getEffectiveRecordingDurationMs } from "@/lib/mediaTiming";
-import { selectRecordingMimeType } from "./recordingMimeType";
+import {
+	getVideoExtensionForMimeType,
+	isWebmMimeType,
+	selectRecordingMimeType,
+	selectWebcamRecordingMimeType,
+} from "./recordingMimeType";
 
 const TARGET_FRAME_RATE = 60;
 const TARGET_WIDTH = 3840;
@@ -27,12 +32,82 @@ const RECORDING_FILE_PREFIX = "recording-";
 const VIDEO_FILE_EXTENSION = ".webm";
 const AUDIO_BITRATE_VOICE = 128_000;
 const AUDIO_BITRATE_SYSTEM = 192_000;
-const MIC_GAIN_BOOST = 1.4;
+const MIC_GAIN_BOOST = 1;
 const WEBCAM_BITRATE = 8_000_000;
 const WEBCAM_WIDTH = 1280;
 const WEBCAM_HEIGHT = 720;
 const WEBCAM_FRAME_RATE = 30;
 const WEBCAM_SUFFIX = "-webcam";
+const SOURCE_AUDIO_MUX_TOAST_ID = "recording-audio-mux-warning";
+const MICROPHONE_FALLBACK_ERROR_TOAST_ID = "recording-microphone-fallback-error";
+const MICROPHONE_SIDECAR_ERROR_TOAST_ID = "recording-microphone-sidecar-error";
+export type BrowserMicrophoneProfile =
+	| "processed"
+	| "no-agc"
+	| "no-echo"
+	| "no-noise-suppression"
+	| "raw";
+const DEFAULT_BROWSER_MICROPHONE_PROFILE: BrowserMicrophoneProfile = "no-agc";
+const BROWSER_MICROPHONE_PROFILES = new Set<BrowserMicrophoneProfile>([
+	"processed",
+	"no-agc",
+	"no-echo",
+	"no-noise-suppression",
+	"raw",
+]);
+type MicrophoneTrackSettingsSnapshot = Partial<
+	Pick<
+		MediaTrackSettings,
+		| "autoGainControl"
+		| "channelCount"
+		| "deviceId"
+		| "echoCancellation"
+		| "groupId"
+		| "noiseSuppression"
+		| "sampleRate"
+		| "sampleSize"
+	>
+> & {
+	trackId?: string;
+	trackLabel?: string;
+	trackEnabled?: boolean;
+	trackMuted?: boolean;
+	trackReadyState?: MediaStreamTrackState;
+};
+type MicrophoneAudioInputDeviceSnapshot = {
+	deviceId: string;
+	groupId?: string;
+	label: string;
+};
+type MicrophoneFallbackChunkEvent = {
+	index: number;
+	size: number;
+	elapsedMs: number;
+	deltaMs: number | null;
+	recordedElapsedMs: number;
+	recordedDeltaMs: number | null;
+};
+type MicrophoneFallbackPauseInterval = {
+	startElapsedMs: number;
+	endElapsedMs?: number;
+	durationMs?: number;
+};
+type MicrophoneFallbackRecorderMetadata = {
+	mimeType: string;
+	audioBitsPerSecond: number;
+	timesliceMs: number;
+};
+type MicrophoneSidecarOptions = {
+	startDelayMs?: number;
+	browserMicrophoneProfile?: BrowserMicrophoneProfile;
+	requestedBrowserMicrophoneProfile?: string | null;
+	requestedConstraints?: MediaStreamConstraints;
+	mediaTrackSettings?: MicrophoneTrackSettingsSnapshot;
+	audioInputDevices?: MicrophoneAudioInputDeviceSnapshot[];
+	mediaRecorder?: MicrophoneFallbackRecorderMetadata;
+	chunkEvents?: MicrophoneFallbackChunkEvent[];
+	pauseIntervals?: MicrophoneFallbackPauseInterval[];
+};
 const LINUX_PORTAL_SOURCE: ProcessedDesktopSource = {
 	id: "screen:linux-portal",
 	name: "Linux Portal",
@@ -40,11 +115,6 @@ const LINUX_PORTAL_SOURCE: ProcessedDesktopSource = {
 	thumbnail: null,
 	appIcon: null,
 	sourceType: "screen",
-};
-
-type PauseSegment = {
-	startMs: number;
-	endMs: number;
 };
 
 type DesktopCaptureMediaDevices = {
@@ -55,6 +125,7 @@ type DesktopCaptureMediaDevices = {
 type UseScreenRecorderReturn = {
 	recording: boolean;
 	paused: boolean;
+	finalizing: boolean;
 	countdownActive: boolean;
 	toggleRecording: () => void;
 	pauseRecording: () => void;
@@ -76,10 +147,123 @@ type UseScreenRecorderReturn = {
 	setCountdownDelay: (delay: number) => void;
 };
 
+function getErrorMessage(error: unknown) {
+	if (error instanceof Error && error.message) {
+		return error.message;
+	}
+
+	if (typeof error === "string" && error.trim().length > 0) {
+		return error;
+	}
+
+	if (typeof error === "object" && error !== null) {
+		try {
+			const serialized = JSON.stringify(error);
+			if (serialized && serialized !== "{}") {
+				return serialized;
+			}
+		} catch {
+			// Ignore stringify failures and fall through to a generic message.
+		}
+
+		if (typeof (error as { toString?: () => string }).toString === "function") {
+			const stringified = (error as { toString: () => string }).toString();
+			if (stringified && stringified !== "[object Object]") {
+				return stringified;
+			}
+		}
+	}
+
+	return "An unexpected error occurred";
+}
+
+export function normalizeBrowserMicrophoneProfile(value?: string | null): BrowserMicrophoneProfile {
+	const normalized = value?.trim().toLowerCase();
+	return normalized && BROWSER_MICROPHONE_PROFILES.has(normalized as BrowserMicrophoneProfile)
+		? (normalized as BrowserMicrophoneProfile)
+		: DEFAULT_BROWSER_MICROPHONE_PROFILE;
+}
+
+export function createProcessedMicrophoneConstraints(
+	microphoneDeviceId?: string,
+	profile: BrowserMicrophoneProfile = DEFAULT_BROWSER_MICROPHONE_PROFILE,
+): MediaStreamConstraints {
+	const normalizedProfile = normalizeBrowserMicrophoneProfile(profile);
+	const audio: MediaTrackConstraints = {
+		echoCancellation: normalizedProfile !== "no-echo" && normalizedProfile !== "raw",
+		noiseSuppression:
+			normalizedProfile !== "no-noise-suppression" && normalizedProfile !== "raw",
+		autoGainControl: normalizedProfile !== "no-agc" && normalizedProfile !== "raw",
+		channelCount: { ideal: 1 },
+		sampleRate: { ideal: 48000 },
+	};
+
+	if (microphoneDeviceId) {
+		audio.deviceId = { exact: microphoneDeviceId };
+	}
+
+	return { audio, video: false };
+}
+
+function createMicrophoneTrackSettingsSnapshot(
+	stream: MediaStream,
+): MicrophoneTrackSettingsSnapshot | null {
+	const track = stream.getAudioTracks()[0];
+	const settings = track?.getSettings?.();
+	if (!track || !settings) {
+		return null;
+	}
+
+	const snapshot: MicrophoneTrackSettingsSnapshot = {
+		trackId: track.id,
+		trackLabel: track.label,
+		trackEnabled: track.enabled,
+		trackMuted: track.muted,
+		trackReadyState: track.readyState,
+	};
+	for (const key of [
+		"autoGainControl",
+		"channelCount",
+		"deviceId",
+		"echoCancellation",
+		"groupId",
+		"noiseSuppression",
+		"sampleRate",
+		"sampleSize",
+	] as const) {
+		const value = settings[key];
+		if (value !== undefined) {
+			snapshot[key] = value as never;
+		}
+	}
+
+	return Object.keys(snapshot).length > 0 ? snapshot : null;
+}
+
+async function createAudioInputDeviceSnapshot(): Promise<
+	MicrophoneAudioInputDeviceSnapshot[] | null
+> {
+	if (typeof navigator.mediaDevices?.enumerateDevices !== "function") {
+		return null;
+	}
+
+	const devices = await navigator.mediaDevices.enumerateDevices();
+	const audioInputs = devices
+		.filter((device) => device.kind === "audioinput")
+		.map((device) => ({
+			deviceId: device.deviceId,
+			...(device.groupId ? { groupId: device.groupId } : {}),
+			label: device.label,
+		}));
+
+	return audioInputs.length > 0 ? audioInputs : null;
+}
+
 export function useScreenRecorder(): UseScreenRecorderReturn {
 	const [recording, setRecording] = useState(false);
 	const [paused, setPaused] = useState(false);
 	const [starting, setStarting] = useState(false);
+	const [finalizing, setFinalizing] = useState(false);
 	const [countdownActive, setCountdownActive] = useState(false);
 	const [isMacOS, setIsMacOS] = useState(false);
 	const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
@@ -114,35 +298,28 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	const resolvedWebcamPath = useRef<string | null>(null);
 	const accumulatedPausedDurationMs = useRef(0);
 	const pauseStartedAtMs = useRef<number | null>(null);
-	const pauseSegmentsRef = useRef<PauseSegment[]>([]);
-	const recordingFinalizationToastId = useRef<string | number | null>(null);
 	const micFallbackRecorder = useRef<MediaRecorder | null>(null);
 	const micFallbackChunks = useRef<Blob[]>([]);
-
-	const showRecordingFinalizationToast = useCallback((message = "Preparing recording...") => {
-		recordingFinalizationToastId.current = toast.loading(message, {
-			id: recordingFinalizationToastId.current ?? undefined,
-			duration: Number.POSITIVE_INFINITY,
-		});
-	}, []);
-
-	const clearRecordingFinalizationToast = useCallback(() => {
-		const toastId = recordingFinalizationToastId.current;
-		if (toastId === null) {
-			return;
-		}
-
-		toast.dismiss(toastId);
-		recordingFinalizationToastId.current = null;
-	}, []);
-
-	const notifyRecordingFinalizationFailure = useCallback(
-		async (message: string) => {
-			clearRecordingFinalizationToast();
-			toast.error(message, { duration: 10000 });
-		},
-		[clearRecordingFinalizationToast],
+	const micFallbackStartDelayMs = useRef<number | null>(null);
+	const micFallbackTrackSettings = useRef<MicrophoneTrackSettingsSnapshot | null>(null);
+	const micFallbackRequestedConstraints = useRef<MediaStreamConstraints | null>(null);
+	const micFallbackAudioInputDevices = useRef<MicrophoneAudioInputDeviceSnapshot[] | null>(null);
+	const micFallbackRecorderMetadata = useRef<MicrophoneFallbackRecorderMetadata | null>(null);
+	const micFallbackChunkEvents = useRef<MicrophoneFallbackChunkEvent[]>([]);
+	const micFallbackRecorderStartedAt = useRef<number | null>(null);
+	const micFallbackPauseStartedAt = useRef<number | null>(null);
+	const micFallbackPausedDurationMs = useRef(0);
+	const micFallbackPauseIntervals = useRef<MicrophoneFallbackPauseInterval[]>([]);
+	const browserMicrophoneProfile = useRef<BrowserMicrophoneProfile>(
+		DEFAULT_BROWSER_MICROPHONE_PROFILE,
 	);
+	const requestedBrowserMicrophoneProfile = useRef<string | null>(null);
+	const hideEditorOverlayCursorByDefault = useRef(false);
+
+	const notifyRecordingFinalizationFailure = useCallback(async (message: string) => {
+		setFinalizing(false);
+		toast.error(message, { duration: 10000 });
+	}, []);
 
 	const showSystemMessage = useCallback(
 		async (message: string, detail?: string) => {
@@ -213,7 +390,6 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		startTime.current = startedAt;
 		accumulatedPausedDurationMs.current = 0;
 		pauseStartedAtMs.current = null;
-		pauseSegmentsRef.current = [];
 	}, []);
 
 	const markRecordingPaused = useCallback((pausedAt: number) => {
@@ -230,9 +406,6 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		const pauseStart = pauseStartedAtMs.current;
 		const pauseDurationMs = Math.max(0, resumedAt - pauseStart);
 		accumulatedPausedDurationMs.current += pauseDurationMs;
-		if (pauseDurationMs > 0) {
-			pauseSegmentsRef.current.push({ startMs: pauseStart, endMs: resumedAt });
-		}
 		pauseStartedAtMs.current = null;
 	}, []);
 
@@ -243,6 +416,32 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			accumulatedPausedDurationMs: accumulatedPausedDurationMs.current,
 			pauseStartedAtMs: pauseStartedAtMs.current,
 		});
+	}, []);
+
+	const getMicFallbackRecordedElapsedMs = useCallback((now = performance.now()) => {
+		const startedAt = micFallbackRecorderStartedAt.current;
+		if (startedAt === null) {
+			return 0;
+		}
+
+		const currentPauseDurationMs =
+			micFallbackPauseStartedAt.current === null
+				? 0
+				: Math.max(0, now - micFallbackPauseStartedAt.current);
+		return Math.max(
+			0,
+			Math.round(
+				now - startedAt - micFallbackPausedDurationMs.current - currentPauseDurationMs,
+			),
+		);
+	}, []);
+
+	const resetMicFallbackTimingDiagnostics = useCallback(() => {
+		micFallbackChunkEvents.current = [];
+		micFallbackRecorderStartedAt.current = null;
+		micFallbackPauseStartedAt.current = null;
+		micFallbackPausedDurationMs.current = 0;
+		micFallbackPauseIntervals.current = [];
 	}, []);
 
 	const preparePermissions = useCallback(async (options: { startup?: boolean } = {}) => {
@@ -288,6 +487,10 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 	const selectMimeType = useCallback(() => {
 		return selectRecordingMimeType();
+	}, []);
+
+	const selectWebcamMimeType = useCallback(() => {
+		return selectWebcamRecordingMimeType();
 	}, []);
 
 	const computeBitrate = (width: number, height: number) => {
@@ -343,8 +546,44 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			}
 			micFallbackRecorder.current = null;
 			micFallbackChunks.current = [];
+			micFallbackTrackSettings.current = null;
+			micFallbackRequestedConstraints.current = null;
+			micFallbackAudioInputDevices.current = null;
+			micFallbackRecorderMetadata.current = null;
+			resetMicFallbackTimingDiagnostics();
 		}
-	}, []);
+	}, [resetMicFallbackTimingDiagnostics]);
+
+	const appendMicFallbackChunk = useCallback(
+		(event: BlobEvent) => {
+			if (event.data.size <= 0) {
+				return;
+			}
+
+			micFallbackChunks.current.push(event.data);
+			const startedAt = micFallbackRecorderStartedAt.current;
+			if (startedAt === null) {
+				return;
+			}
+
+			const now = performance.now();
+			const elapsedMs = Math.max(0, Math.round(now - startedAt));
+			const recordedElapsedMs = getMicFallbackRecordedElapsedMs(now);
+			const previous =
+				micFallbackChunkEvents.current[micFallbackChunkEvents.current.length - 1];
+			micFallbackChunkEvents.current.push({
+				index: micFallbackChunkEvents.current.length,
+				size: event.data.size,
+				elapsedMs,
+				deltaMs: previous ? Math.max(0, elapsedMs - previous.elapsedMs) : null,
+				recordedElapsedMs,
+				recordedDeltaMs: previous
+					? Math.max(0, recordedElapsedMs - previous.recordedElapsedMs)
+					: null,
+			});
+		},
+		[getMicFallbackRecordedElapsedMs],
+	);
 
 	const resolveBrowserCaptureSource = useCallback(async (source: ProcessedDesktopSource) => {
 		if (!source?.id?.startsWith("screen:")) {
@@ -397,31 +636,58 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 	const finalizeRecordingSession = useCallback(
 		async (videoPath: string, webcamPath: string | null) => {
+			const shouldHideOverlayCursor = hideEditorOverlayCursorByDefault.current;
 			try {
 				if (webcamPath) {
 					await window.electronAPI.setCurrentRecordingSession({
 						videoPath,
 						webcamPath,
 						timeOffsetMs: webcamTimeOffsetMs.current,
+						hideOverlayCursorByDefault: shouldHideOverlayCursor,
 					});
 				} else {
-					await window.electronAPI.setCurrentVideoPath(videoPath);
+					await window.electronAPI.setCurrentVideoPath(videoPath, {
+						hideOverlayCursorByDefault: shouldHideOverlayCursor,
+					});
 				}
 			} catch (error) {
 				console.error("Failed to persist recording session metadata:", error);
 
 				try {
-					await window.electronAPI.setCurrentVideoPath(videoPath);
+					await window.electronAPI.setCurrentVideoPath(videoPath, {
+						hideOverlayCursorByDefault: shouldHideOverlayCursor,
+					});
 				} catch (fallbackError) {
 					console.error("Failed to persist fallback video path:", fallbackError);
 				}
 			}
 
-			clearRecordingFinalizationToast();
+			setFinalizing(false);
 			await window.electronAPI.switchToEditor();
 		},
-		[clearRecordingFinalizationToast],
+		[],
 	);
+
+	const closeMicFallbackPauseInterval = useCallback((now = performance.now()) => {
+		const pauseStartedAt = micFallbackPauseStartedAt.current;
+		if (pauseStartedAt === null) {
+			return;
+		}
+
+		const durationMs = Math.max(0, Math.round(now - pauseStartedAt));
+		micFallbackPausedDurationMs.current += durationMs;
+		const startedAt = micFallbackRecorderStartedAt.current ?? now;
+		const lastInterval =
+			micFallbackPauseIntervals.current[micFallbackPauseIntervals.current.length - 1];
+		if (lastInterval && lastInterval.endElapsedMs === undefined) {
+			lastInterval.endElapsedMs = Math.max(
+				lastInterval.startElapsedMs,
+				Math.round(now - startedAt),
+			);
+			lastInterval.durationMs = durationMs;
+		}
+		micFallbackPauseStartedAt.current = null;
+	}, []);
 
 	const stopMicFallbackRecorder = useCallback((): Promise<Blob | null> => {
 		return new Promise((resolve) => {
@@ -431,11 +697,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				resolve(null);
 				return;
 			}
-			recorder.ondataavailable = (event) => {
-				if (event.data.size > 0) {
-					micFallbackChunks.current.push(event.data);
-				}
-			};
+			closeMicFallbackPauseInterval();
+			recorder.ondataavailable = appendMicFallbackChunk;
 			recorder.onstop = () => {
 				const blob =
 					micFallbackChunks.current.length > 0
@@ -444,27 +707,131 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				micFallbackChunks.current = [];
 				recorder.stream.getTracks().forEach((track) => track.stop());
 				micFallbackRecorder.current = null;
+				micFallbackRecorderStartedAt.current = null;
 				resolve(blob);
 			};
 			recorder.stop();
 		});
+	}, [appendMicFallbackChunk, closeMicFallbackPauseInterval]);
+
+	const pauseMicFallbackRecorder = useCallback(() => {
+		const recorder = micFallbackRecorder.current;
+		if (recorder?.state !== "recording") {
+			return;
+		}
+
+		try {
+			recorder.requestData();
+		} catch (error) {
+			console.warn("Failed to flush microphone fallback chunk before pause:", error);
+		}
+
+		recorder.pause();
+		const now = performance.now();
+		const startedAt = micFallbackRecorderStartedAt.current ?? now;
+		micFallbackPauseStartedAt.current = now;
+		micFallbackPauseIntervals.current.push({
+			startElapsedMs: Math.max(0, Math.round(now - startedAt)),
+		});
 	}, []);
 
+	const resumeMicFallbackRecorder = useCallback(() => {
+		const recorder = micFallbackRecorder.current;
+		if (recorder?.state !== "paused") {
+			return;
+		}
+
+		closeMicFallbackPauseInterval();
+		recorder.resume();
+	}, [closeMicFallbackPauseInterval]);
+
 	const storeMicrophoneSidecar = useCallback(
-		async (micFallbackBlobPromise: Promise<Blob | null> | null | undefined, finalPath: string) => {
+		async (
+			micFallbackBlobPromise: Promise<Blob | null> | null | undefined,
+			finalPath: string,
+			startDelayMs?: number | null,
+			mediaTrackSettings?: MicrophoneTrackSettingsSnapshot | null,
+		) => {
 			const micFallbackBlob = await micFallbackBlobPromise;
 			if (!micFallbackBlob) {
+				micFallbackStartDelayMs.current = null;
+				micFallbackTrackSettings.current = null;
+				micFallbackRequestedConstraints.current = null;
+				micFallbackAudioInputDevices.current = null;
+				micFallbackRecorderMetadata.current = null;
+				resetMicFallbackTimingDiagnostics();
 				return;
 			}
 
 			try {
 				const arrayBuffer = await micFallbackBlob.arrayBuffer();
-				await window.electronAPI.storeMicrophoneSidecar(arrayBuffer, finalPath);
+				const effectiveStartDelayMs = startDelayMs ?? micFallbackStartDelayMs.current;
+				const effectiveTrackSettings =
+					mediaTrackSettings ?? micFallbackTrackSettings.current;
+				const sidecarOptions: MicrophoneSidecarOptions = {
+					...(Number.isFinite(effectiveStartDelayMs) && (effectiveStartDelayMs ?? 0) >= 0
+						? { startDelayMs: effectiveStartDelayMs ?? 0 }
+						: {}),
+					browserMicrophoneProfile: browserMicrophoneProfile.current,
+					...(requestedBrowserMicrophoneProfile.current
+						? {
+								requestedBrowserMicrophoneProfile:
+									requestedBrowserMicrophoneProfile.current,
+							}
+						: {}),
+					...(micFallbackRequestedConstraints.current
+						? { requestedConstraints: micFallbackRequestedConstraints.current }
+						: {}),
+					...(effectiveTrackSettings
+						? { mediaTrackSettings: effectiveTrackSettings }
+						: {}),
+					...(micFallbackAudioInputDevices.current
+						? { audioInputDevices: micFallbackAudioInputDevices.current }
+						: {}),
+					...(micFallbackRecorderMetadata.current
+						? { mediaRecorder: micFallbackRecorderMetadata.current }
+						: {}),
+					...(micFallbackChunkEvents.current.length > 0
+						? { chunkEvents: [...micFallbackChunkEvents.current] }
+						: {}),
+					...(micFallbackPauseIntervals.current.length > 0
+						? {
+								pauseIntervals: micFallbackPauseIntervals.current.map(
+									(interval) => ({ ...interval }),
+								),
+							}
+						: {}),
+				};
+				const result = await window.electronAPI.storeMicrophoneSidecar(
+					arrayBuffer,
+					finalPath,
+					sidecarOptions,
+				);
+				if (!result.success) {
+					const errorMessage =
+						result.error || "Failed to save the fallback microphone audio track";
+					console.warn("Failed to store microphone sidecar:", errorMessage);
+					toast.error(
+						`${errorMessage}. Recording was saved without the fallback microphone track.`,
+						{ id: MICROPHONE_SIDECAR_ERROR_TOAST_ID, duration: 10000 },
+					);
+				}
 			} catch (error) {
 				console.warn("Failed to store microphone sidecar:", error);
+				toast.error(
+					`${getErrorMessage(error)}. Recording was saved without the fallback microphone track.`,
+					{ id: MICROPHONE_SIDECAR_ERROR_TOAST_ID, duration: 10000 },
+				);
+			} finally {
+				micFallbackStartDelayMs.current = null;
+				micFallbackTrackSettings.current = null;
+				micFallbackRequestedConstraints.current = null;
+				micFallbackAudioInputDevices.current = null;
+				micFallbackRecorderMetadata.current = null;
+				resetMicFallbackTimingDiagnostics();
 			}
 		},
-		[],
+		[resetMicFallbackTimingDiagnostics],
 	);
 
 	const stopWebcamRecorder = useCallback(async () => {
@@ -494,7 +861,10 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	}, []);
 
 	const recoverNativeRecordingSession = useCallback(
-		async (micFallbackBlobPromise?: Promise<Blob | null> | null) => {
+		async (
+			micFallbackBlobPromise?: Promise<Blob | null> | null,
+			startDelayMs?: number | null,
+		) => {
 			if (typeof window.electronAPI?.recoverNativeScreenRecording !== "function") {
 				return null;
 			}
@@ -507,7 +877,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			const resolvedMicFallbackBlobPromise =
 				micFallbackBlobPromise ?? stopMicFallbackRecorder();
 			const webcamPath = await stopWebcamRecorder();
-			await storeMicrophoneSidecar(resolvedMicFallbackBlobPromise, result.path);
+			await storeMicrophoneSidecar(resolvedMicFallbackBlobPromise, result.path, startDelayMs);
 			await finalizeRecordingSession(result.path, webcamPath);
 			return result.path;
 		},
@@ -550,7 +920,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				audio: false,
 			});
 
-			const mimeType = selectMimeType();
+			const mimeType = selectWebcamMimeType();
 			webcamChunks.current = [];
 			resolvedWebcamPath.current = null;
 			webcamStopPromise.current = new Promise((resolve) => {
@@ -575,7 +945,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			};
 			recorder.onstop = async () => {
 				const sessionTimestamp = recordingSessionTimestamp.current ?? Date.now();
-				const webcamFileName = `${RECORDING_FILE_PREFIX}${sessionTimestamp}${WEBCAM_SUFFIX}${VIDEO_FILE_EXTENSION}`;
+				const webcamMimeType = recorder.mimeType || mimeType;
+				const webcamFileName = `${RECORDING_FILE_PREFIX}${sessionTimestamp}${WEBCAM_SUFFIX}${getVideoExtensionForMimeType(webcamMimeType)}`;
 
 				try {
 					if (webcamChunks.current.length === 0) {
@@ -587,14 +958,15 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 						0,
 						getRecordingDurationMs(Date.now()) - webcamTimeOffsetMs.current,
 					);
-					const webcamBlobType = recorder.mimeType || mimeType;
 					const webcamBlob = new Blob(
 						webcamChunks.current,
-						webcamBlobType ? { type: webcamBlobType } : undefined,
+						webcamMimeType ? { type: webcamMimeType } : undefined,
 					);
 					webcamChunks.current = [];
-					const fixedBlob = await fixWebmDuration(webcamBlob, duration);
-					const arrayBuffer = await fixedBlob.arrayBuffer();
+					const finalBlob = isWebmMimeType(webcamMimeType)
+						? await fixWebmDuration(webcamBlob, duration)
+						: webcamBlob;
+					const arrayBuffer = await finalBlob.arrayBuffer();
 					const result = await window.electronAPI.storeRecordedVideo(
 						arrayBuffer,
 						webcamFileName,
@@ -629,7 +1001,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				webcamStream.current = null;
 			}
 		}
-	}, [getRecordingDurationMs, selectMimeType, webcamDeviceId, webcamEnabled]);
+	}, [getRecordingDurationMs, selectWebcamMimeType, webcamDeviceId, webcamEnabled]);
 
 	/** Start the prepared webcam MediaRecorder. Call after main recording begins. */
 	const beginWebcamCapture = useCallback(() => {
@@ -645,18 +1017,22 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		if (nativeScreenRecording.current) {
 			nativeScreenRecording.current = false;
 			setRecording(false);
+			setFinalizing(true);
 
 			void (async () => {
-				showRecordingFinalizationToast();
+				const fallbackStartDelayMs = micFallbackStartDelayMs.current;
+				const fallbackTrackSettings = micFallbackTrackSettings.current;
+				const stoppedAtMs = Date.now();
+				markRecordingResumed(stoppedAtMs);
+				const expectedDurationMs = getRecordingDurationMs(stoppedAtMs);
 				const micFallbackBlobPromise = stopMicFallbackRecorder();
-				const webcamPath = await stopWebcamRecorder();
+				const webcamPathPromise = stopWebcamRecorder();
 				const isNativeWindows = nativeWindowsRecording.current;
-				markRecordingResumed(Date.now());
-				const pauseSegments = pauseSegmentsRef.current.slice();
 				nativeWindowsRecording.current = false;
 
 				const result = await window.electronAPI.stopNativeScreenRecording();
 				await window.electronAPI?.setRecordingState(false);
+				const webcamPath = await webcamPathPromise;
 
 				if (!result.success || !result.path) {
 					console.error(
@@ -667,6 +1043,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					try {
 						const recoveredPath = await recoverNativeRecordingSession(
 							micFallbackBlobPromise,
+							fallbackStartDelayMs,
 						);
 						if (recoveredPath) {
 							return;
@@ -689,14 +1066,30 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 				if (isNativeWindows) {
 					const muxResult =
-						await window.electronAPI.muxNativeWindowsRecording(pauseSegments);
-					if (!muxResult?.success) {
+						await window.electronAPI.muxNativeWindowsRecording(expectedDurationMs);
+					if (!muxResult?.success || !muxResult.path) {
 						void logNativeCaptureDiagnostics("mux-native-windows-recording");
+						const fallbackPath = muxResult?.path ?? finalPath;
+						const warningMessage =
+							muxResult?.error ||
+							muxResult?.message ||
+							"Failed to finish the native Windows audio mux";
+						toast.warning(
+							`${warningMessage}. Recording was saved, but audio playback or export may be incomplete.`,
+							{ id: SOURCE_AUDIO_MUX_TOAST_ID, duration: 10000 },
+						);
+						finalPath = fallbackPath;
+					} else {
+						finalPath = muxResult.path;
 					}
-					finalPath = muxResult?.path ?? result.path;
 				}
 
-				await storeMicrophoneSidecar(micFallbackBlobPromise, finalPath);
+				await storeMicrophoneSidecar(
+					micFallbackBlobPromise,
+					finalPath,
+					fallbackStartDelayMs,
+					fallbackTrackSettings,
+				);
 
 				await finalizeRecordingSession(finalPath, webcamPath);
 			})();
@@ -715,9 +1108,14 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				}
 			}
 			pendingWebcamPathPromise.current = stopWebcamRecorder();
-			cleanupCapturedMedia();
+			try {
+				recorder.requestData();
+			} catch (error) {
+				console.warn("Failed to flush recorder before stopping:", error);
+			}
 			recorder.stop();
 			setRecording(false);
+			setFinalizing(true);
 			window.electronAPI?.setRecordingState(false);
 		}
 	});
@@ -726,6 +1124,22 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		void (async () => {
 			const platform = await window.electronAPI.getPlatform();
 			setIsMacOS(platform === "darwin");
+		})();
+	}, []);
+
+	useEffect(() => {
+		if (typeof window.electronAPI?.getRecordingAudioLabConfig !== "function") {
+			return;
+		}
+
+		void (async () => {
+			const result = await window.electronAPI.getRecordingAudioLabConfig();
+			browserMicrophoneProfile.current = normalizeBrowserMicrophoneProfile(
+				result.browserMicrophoneProfile,
+			);
+			requestedBrowserMicrophoneProfile.current =
+				result.requestedBrowserMicrophoneProfile ?? null;
+			console.info("Browser microphone profile:", browserMicrophoneProfile.current);
 		})();
 	}, []);
 
@@ -857,6 +1271,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 		try {
 			const platform = await window.electronAPI.getPlatform();
+			hideEditorOverlayCursorByDefault.current = false;
 			const existingSource = await window.electronAPI.getSelectedSource();
 			const selectedSource =
 				existingSource ?? (platform === "linux" ? LINUX_PORTAL_SOURCE : null);
@@ -944,6 +1359,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				);
 				if (!nativeResult.success) {
 					if (useNativeWindowsCapture) {
+						hideEditorOverlayCursorByDefault.current = true;
 						console.warn(
 							"Native Windows capture failed, falling back to browser capture:",
 							nativeResult.error ?? nativeResult.message,
@@ -971,6 +1387,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 				if (nativeResult.success) {
 					const mainStartedAt = Date.now();
+					micFallbackStartDelayMs.current = null;
 					beginWebcamCapture();
 					nativeScreenRecording.current = true;
 					nativeWindowsRecording.current = useNativeWindowsCapture;
@@ -980,38 +1397,68 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 							? 0
 							: webcamStartTime.current - mainStartedAt;
 
-					// When native mic capture is unavailable (macOS < 14), record mic
-					// via browser getUserMedia so it can be saved as a sidecar file.
+					// When native mic capture is unavailable or explicitly bypassed,
+					// record mic via browser getUserMedia as a sidecar file.
 					if (nativeResult.microphoneFallbackRequired && microphoneEnabled) {
+						void logNativeCaptureDiagnostics("start-browser-microphone-fallback");
+						console.info("Using browser microphone processing for this recording.");
 						try {
-							const micStream = await navigator.mediaDevices.getUserMedia({
-								audio: microphoneDeviceId
-									? {
-											deviceId: { exact: microphoneDeviceId },
-											echoCancellation: true,
-											noiseSuppression: true,
-											autoGainControl: true,
-										}
-									: {
-											echoCancellation: true,
-											noiseSuppression: true,
-											autoGainControl: true,
-										},
-								video: false,
-							});
+							const microphoneConstraints = createProcessedMicrophoneConstraints(
+								microphoneDeviceId,
+								browserMicrophoneProfile.current,
+							);
+							micFallbackRequestedConstraints.current = microphoneConstraints;
+							const micStream =
+								await navigator.mediaDevices.getUserMedia(microphoneConstraints);
+							micFallbackTrackSettings.current =
+								createMicrophoneTrackSettingsSnapshot(micStream);
+							micFallbackAudioInputDevices.current =
+								await createAudioInputDeviceSnapshot().catch(() => null);
+							console.info(
+								"Browser microphone track settings:",
+								micFallbackTrackSettings.current,
+							);
+							console.info(
+								"Browser microphone audio input devices:",
+								micFallbackAudioInputDevices.current,
+							);
 							micFallbackChunks.current = [];
 							const recorder = new MediaRecorder(micStream, {
 								mimeType: "audio/webm;codecs=opus",
+								audioBitsPerSecond: AUDIO_BITRATE_VOICE,
 							});
-							recorder.ondataavailable = (event) => {
-								if (event.data.size > 0) {
-									micFallbackChunks.current.push(event.data);
-								}
+							micFallbackRecorderMetadata.current = {
+								mimeType: recorder.mimeType,
+								audioBitsPerSecond: AUDIO_BITRATE_VOICE,
+								timesliceMs: RECORDER_TIMESLICE_MS,
 							};
+							resetMicFallbackTimingDiagnostics();
+							micFallbackRecorderStartedAt.current = performance.now();
+							recorder.ondataavailable = appendMicFallbackChunk;
+							micFallbackStartDelayMs.current = Math.max(
+								0,
+								Date.now() - mainStartedAt,
+							);
 							recorder.start(RECORDER_TIMESLICE_MS);
 							micFallbackRecorder.current = recorder;
 						} catch (micError) {
+							micFallbackStartDelayMs.current = null;
+							micFallbackTrackSettings.current = null;
+							micFallbackRequestedConstraints.current = null;
+							micFallbackAudioInputDevices.current = null;
+							micFallbackRecorderMetadata.current = null;
+							resetMicFallbackTimingDiagnostics();
 							console.warn("Browser microphone fallback failed:", micError);
+							const permissionDenied =
+								micError instanceof DOMException &&
+								(micError.name === "NotAllowedError" ||
+									micError.name === "SecurityError");
+							toast.error(
+								permissionDenied
+									? "Microphone permission denied. Recording will continue without microphone audio."
+									: `${getErrorMessage(micError)}. Recording will continue without microphone audio.`,
+								{ id: MICROPHONE_FALLBACK_ERROR_TOAST_ID, duration: 10000 },
+							);
 						}
 					}
 
@@ -1021,6 +1468,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					return;
 				}
 			}
+
+			hideEditorOverlayCursorByDefault.current = true;
 
 			const wantsAudioCapture = microphoneEnabled || systemAudioEnabled;
 			const browserCaptureSource = await resolveBrowserCaptureSource(selectedSource);
@@ -1043,6 +1492,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			let videoTrack: MediaStreamTrack | undefined;
 			let systemAudioIncluded = false;
 			const mediaDevices = navigator.mediaDevices as DesktopCaptureMediaDevices;
+			const useLinuxPortal = selectedSource.id === "screen:linux-portal";
 			const browserScreenVideoConstraints = {
 				mandatory: {
 					chromeMediaSource: CHROME_MEDIA_SOURCE,
@@ -1058,7 +1508,6 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 			if (wantsAudioCapture) {
 				let screenMediaStream: MediaStream;
-				const useLinuxPortal = selectedSource.id === "screen:linux-portal";
 				const acquireLinuxPortalStream = (withAudio: boolean) =>
 					mediaDevices.getDisplayMedia({
 						audio: withAudio,
@@ -1122,21 +1571,12 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 				if (microphoneEnabled) {
 					try {
-						microphoneStream.current = await navigator.mediaDevices.getUserMedia({
-							audio: microphoneDeviceId
-								? {
-										deviceId: { exact: microphoneDeviceId },
-										echoCancellation: true,
-										noiseSuppression: true,
-										autoGainControl: true,
-									}
-								: {
-										echoCancellation: true,
-										noiseSuppression: true,
-										autoGainControl: true,
-									},
-							video: false,
-						});
+						microphoneStream.current = await navigator.mediaDevices.getUserMedia(
+							createProcessedMicrophoneConstraints(
+								microphoneDeviceId,
+								browserMicrophoneProfile.current,
+							),
+						);
 					} catch (audioError) {
 						console.warn("Failed to get microphone access:", audioError);
 						await showSystemMessage(
@@ -1177,20 +1617,25 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					stream.current.addTrack(micAudioTrack);
 				}
 			} else {
-				const mediaStream = await mediaDevices.getDisplayMedia({
-					audio: false,
-					video: {
-						displaySurface: selectedSource.id?.startsWith("window:")
-							? "window"
-							: "monitor",
-						width: { ideal: TARGET_WIDTH, max: TARGET_WIDTH },
-						height: { ideal: TARGET_HEIGHT, max: TARGET_HEIGHT },
-						frameRate: { ideal: TARGET_FRAME_RATE, max: TARGET_FRAME_RATE },
-						cursor: "never",
-					},
-					selfBrowserSurface: "exclude",
-					surfaceSwitching: "exclude",
-				});
+				const mediaStream = useLinuxPortal
+					? await mediaDevices.getDisplayMedia({
+							audio: false,
+							video: {
+								displaySurface: selectedSource.id?.startsWith("window:")
+									? "window"
+									: "monitor",
+								width: { ideal: TARGET_WIDTH, max: TARGET_WIDTH },
+								height: { ideal: TARGET_HEIGHT, max: TARGET_HEIGHT },
+								frameRate: { ideal: TARGET_FRAME_RATE, max: TARGET_FRAME_RATE },
+								cursor: "never",
+							},
+							selfBrowserSurface: "exclude",
+							surfaceSwitching: "exclude",
+						})
+					: await mediaDevices.getUserMedia({
+							audio: false,
+							video: browserScreenVideoConstraints,
+						});
 
 				stream.current = mediaStream;
 				videoTrack = mediaStream.getVideoTracks()[0];
@@ -1251,9 +1696,10 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			};
 			recorder.onstop = async () => {
 				cleanupCapturedMedia();
-				if (chunks.current.length === 0) return;
-
-				showRecordingFinalizationToast();
+				if (chunks.current.length === 0) {
+					setFinalizing(false);
+					return;
+				}
 
 				const duration = getRecordingDurationMs(Date.now());
 				const recordedChunks = chunks.current;
@@ -1316,8 +1762,14 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					: "Failed to start recording",
 			);
 			setRecording(false);
-			cleanupCapturedMedia();
-			await stopWebcamRecorder();
+			try {
+				await window.electronAPI?.setRecordingState(false);
+			} catch (stateError) {
+				console.warn("Failed to reset main-process recording state:", stateError);
+			} finally {
+				cleanupCapturedMedia();
+				await stopWebcamRecorder();
+			}
 		} finally {
 			startInFlight.current = false;
 			setStarting(false);
@@ -1340,8 +1792,15 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				if (webcamRecorder.current?.state === "recording") {
 					webcamRecorder.current.pause();
 				}
-				markRecordingPaused(Date.now());
+				pauseMicFallbackRecorder();
+				const boundaryMs = Date.now();
+				markRecordingPaused(boundaryMs);
 				setPaused(true);
+				try {
+					await window.electronAPI.pauseCursorCapture();
+				} catch (error) {
+					console.warn("Failed to pause cursor capture:", error);
+				}
 			})();
 			return;
 		}
@@ -1350,10 +1809,18 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			if (webcamRecorder.current?.state === "recording") {
 				webcamRecorder.current.pause();
 			}
-			markRecordingPaused(Date.now());
-			setPaused(true);
+			void (async () => {
+				const boundaryMs = Date.now();
+				markRecordingPaused(boundaryMs);
+				setPaused(true);
+				try {
+					await window.electronAPI.pauseCursorCapture();
+				} catch (error) {
+					console.warn("Failed to pause cursor capture:", error);
+				}
+			})();
 		}
-	}, [markRecordingPaused, paused, recording]);
+	}, [markRecordingPaused, pauseMicFallbackRecorder, paused, recording]);
 
 	const resumeRecording = useCallback(() => {
 		if (!recording || !paused) return;
@@ -1371,8 +1838,15 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				if (webcamRecorder.current?.state === "paused") {
 					webcamRecorder.current.resume();
 				}
-				markRecordingResumed(Date.now());
+				resumeMicFallbackRecorder();
+				const boundaryMs = Date.now();
+				markRecordingResumed(boundaryMs);
 				setPaused(false);
+				try {
+					await window.electronAPI.resumeCursorCapture();
+				} catch (error) {
+					console.warn("Failed to resume cursor capture:", error);
+				}
 			})();
 			return;
 		}
@@ -1381,10 +1855,18 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			if (webcamRecorder.current?.state === "paused") {
 				webcamRecorder.current.resume();
 			}
-			markRecordingResumed(Date.now());
-			setPaused(false);
+			void (async () => {
+				const boundaryMs = Date.now();
+				markRecordingResumed(boundaryMs);
+				setPaused(false);
+				try {
+					await window.electronAPI.resumeCursorCapture();
+				} catch (error) {
+					console.warn("Failed to resume cursor capture:", error);
+				}
+			})();
 		}
-	}, [markRecordingResumed, paused, recording]);
+	}, [markRecordingResumed, paused, recording, resumeMicFallbackRecorder]);
 
 	const cancelRecording = useCallback(() => {
 		if (!recording) return;
@@ -1434,7 +1916,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	}, [cleanupCapturedMedia, markRecordingResumed, recording]);
 
 	const toggleRecording = async () => {
-		if (starting || countdownActive) {
+		if (starting || countdownActive || finalizing) {
 			return;
 		}
 
@@ -1462,6 +1944,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	return {
 		recording,
 		paused,
+		finalizing,
 		countdownActive,
 		toggleRecording,
 		pauseRecording,

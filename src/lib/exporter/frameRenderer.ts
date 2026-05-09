@@ -1,5 +1,6 @@
-import { Application, BlurFilter, Container, Graphics, Sprite, Texture } from "pixi.js";
+import { Application, Container, Graphics, Rectangle, Sprite, Texture } from "pixi.js";
 import { MotionBlurFilter } from "pixi-filters/motion-blur";
+import { ZoomBlurFilter } from "pixi-filters/zoom-blur";
 import type {
 	AnnotationRegion,
 	AutoCaptionSettings,
@@ -7,8 +8,10 @@ import type {
 	CropRegion,
 	CursorStyle,
 	CursorTelemetryPoint,
+	Padding,
 	SpeedRegion,
 	WebcamOverlaySettings,
+	ZoomMotionBlurTuning,
 	ZoomRegion,
 	ZoomTransitionEasing,
 } from "@/components/video-editor/types";
@@ -29,6 +32,7 @@ import {
 	PixiCursorOverlay,
 	preloadCursorAssets,
 } from "@/components/video-editor/videoPlayback/cursorRenderer";
+import { computePaddedLayout } from "@/components/video-editor/videoPlayback/layoutUtils";
 import {
 	createSpringState,
 	getZoomSpringConfig,
@@ -36,6 +40,7 @@ import {
 	type SpringState,
 	stepSpringValue,
 } from "@/components/video-editor/videoPlayback/motionSmoothing";
+import { getWebcamMediaTargetTimeSeconds } from "@/components/video-editor/videoPlayback/webcamSync";
 import { findDominantRegion } from "@/components/video-editor/videoPlayback/zoomRegionUtils";
 import {
 	applyZoomTransform,
@@ -45,10 +50,11 @@ import {
 	type MotionBlurState,
 } from "@/components/video-editor/videoPlayback/zoomTransform";
 import {
+	getWebcamCropSourceRect,
 	getWebcamOverlayPosition,
 	getWebcamOverlaySizePx,
 } from "@/components/video-editor/webcamOverlay";
-import { getAssetPath, getRenderableAssetUrl } from "@/lib/assetPath";
+import { getAssetPath, getExportableVideoUrl, getRenderableAssetUrl } from "@/lib/assetPath";
 import { extensionHost } from "@/lib/extensions";
 import {
 	mapCursorToCanvasNormalized,
@@ -61,12 +67,18 @@ import {
 } from "@/lib/extensions/renderHooks";
 import { applyCanvasSceneTransform } from "@/lib/extensions/sceneTransform";
 import { drawSquircleOnCanvas, drawSquircleOnGraphics } from "@/lib/geometry/squircle";
-import { clampMediaTimeToDuration } from "@/lib/mediaTiming";
+import {
+	clampMediaTimeToDuration,
+	getEffectiveVideoStreamDurationSeconds,
+} from "@/lib/mediaTiming";
 import { isVideoWallpaperSource } from "@/lib/wallpapers";
 import { renderAnnotations } from "./annotationRenderer";
 import { renderCaptions } from "./captionRenderer";
 import { ForwardFrameSource } from "./forwardFrameSource";
 import { resolveMediaElementSource } from "./localMediaSource";
+import { buildTemporalSamplePlanUs, getTemporalMotionBlurConfig } from "./temporalMotionBlur";
+
+const TEMPORAL_ZOOM_MOTION_BLUR_ENABLED = false;
 
 interface FrameRenderConfig {
 	width: number;
@@ -78,6 +90,10 @@ interface FrameRenderConfig {
 	shadowIntensity: number;
 	backgroundBlur: number;
 	zoomMotionBlur?: number;
+	zoomMotionBlurTuning?: ZoomMotionBlurTuning;
+	zoomTemporalMotionBlur?: number;
+	zoomMotionBlurSampleCount?: number | null;
+	zoomMotionBlurShutterFraction?: number | null;
 	connectZooms?: boolean;
 	zoomInDurationMs?: number;
 	zoomInOverlapMs?: number;
@@ -88,7 +104,7 @@ interface FrameRenderConfig {
 	zoomOutEasing?: ZoomTransitionEasing;
 	connectedZoomEasing?: ZoomTransitionEasing;
 	borderRadius?: number;
-	padding?: number;
+	padding?: Padding | number;
 	cropRegion: CropRegion;
 	webcam?: WebcamOverlaySettings;
 	webcamUrl?: string | null;
@@ -105,6 +121,12 @@ interface FrameRenderConfig {
 	cursorStyle?: CursorStyle;
 	cursorSize?: number;
 	cursorSmoothing?: number;
+	cursorSpringStiffnessMultiplier?: number;
+	cursorSpringDampingMultiplier?: number;
+	cursorSpringMassMultiplier?: number;
+	cameraSpringStiffnessMultiplier?: number;
+	cameraSpringDampingMultiplier?: number;
+	cameraSpringMassMultiplier?: number;
 	zoomSmoothness?: number;
 	zoomClassicMode?: boolean;
 	cursorMotionBlur?: number;
@@ -122,6 +144,56 @@ interface AnimationState {
 	progress: number;
 	x: number;
 	y: number;
+}
+
+type ExportRenderBackend = "webgl" | "webgpu";
+type PixiRendererAttempt = {
+	backend: ExportRenderBackend;
+	message: string;
+};
+
+const PIXI_RENDERER_INIT_TIMEOUT_MS = 8_000;
+const BACKGROUND_MEDIA_ELEMENT_READY_TIMEOUT_MS = 5_000;
+
+function isCanvasRenderer(renderer: Application): boolean {
+	const rendererName = renderer?.renderer?.constructor?.name?.toLowerCase();
+	return Boolean(
+		rendererName &&
+			(rendererName.includes("canvasrenderer") || rendererName.includes("canvas")),
+	);
+}
+
+function toErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error ?? "Unknown renderer init error");
+}
+
+type PixiInitOptions = Parameters<Application["init"]>[0];
+
+async function initApplicationWithTimeout(
+	app: Application,
+	options: PixiInitOptions,
+	backend: ExportRenderBackend,
+): Promise<void> {
+	const timeoutErrorMessage = `Initialization timed out after ${PIXI_RENDERER_INIT_TIMEOUT_MS}ms for ${backend} renderer`;
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+	const timeoutPromise = new Promise<never>((_, reject) => {
+		timeoutId = setTimeout(() => {
+			reject(new Error(timeoutErrorMessage));
+		}, PIXI_RENDERER_INIT_TIMEOUT_MS);
+	});
+
+	try {
+		await Promise.race([app.init(options), timeoutPromise]);
+	} finally {
+		if (timeoutId !== undefined) {
+			clearTimeout(timeoutId);
+		}
+	}
+}
+
+function summarizeRendererAttempts(attempts: readonly PixiRendererAttempt[]): string {
+	const details = attempts.map((attempt) => `${attempt.backend}: ${attempt.message}`).join(" | ");
+	return `No supported Pixi export backend was available. Attempted: ${details}`;
 }
 
 interface VideoTextureSource {
@@ -143,6 +215,14 @@ interface LayoutCache {
 		height: number;
 		sourceCrop: CropRegion;
 	};
+}
+
+interface RenderSnapshot {
+	timeMs: number;
+	cursorTimeMs: number;
+	smoothedCursor: ReturnType<typeof mapSmoothedCursorToCanvasNormalized>;
+	sceneTransform: { scale: number; x: number; y: number };
+	zoom: { scale: number; focusX: number; focusY: number; progress: number };
 }
 
 function createAnimationState(): AnimationState {
@@ -181,21 +261,28 @@ export class FrameRenderer {
 	private videoTextureSource: VideoTextureSource | null = null;
 	private backgroundSprite: HTMLCanvasElement | null = null;
 	private maskGraphics: Graphics | null = null;
-	private blurFilter: BlurFilter | null = null;
+	private zoomBlurFilter: ZoomBlurFilter | null = null;
 	private motionBlurFilter: MotionBlurFilter | null = null;
 	private shadowCanvas: HTMLCanvasElement | null = null;
 	private shadowCtx: CanvasRenderingContext2D | null = null;
 	private compositeCanvas: HTMLCanvasElement | null = null;
 	private compositeCtx: CanvasRenderingContext2D | null = null;
+	private temporalAccumulationCanvas: HTMLCanvasElement | null = null;
+	private temporalAccumulationCtx: CanvasRenderingContext2D | null = null;
+	private backgroundForwardFrameSource: ForwardFrameSource | null = null;
+	private backgroundForwardFrameSourceUrl: string | null = null;
+	private backgroundForwardFrameDurationSec: number | null = null;
+	private backgroundDecodedFrame: VideoFrame | null = null;
 	private backgroundVideoElement: HTMLVideoElement | null = null;
 	private backgroundCtx: CanvasRenderingContext2D | null = null;
+	private backgroundSeekPromise: Promise<void> | null = null;
+	private lastSyncedBackgroundLoopTimeSec: number | null = null;
 	private cleanupBackgroundSource: (() => void) | null = null;
 	private config: FrameRenderConfig;
 	private animationState: AnimationState;
 	private motionBlurState: MotionBlurState;
 	private layoutCache: LayoutCache | null = null;
 	private currentVideoTime = 0;
-	private lastMotionVector = { x: 0, y: 0 };
 	private springScale: SpringState;
 	private springX: SpringState;
 	private springY: SpringState;
@@ -227,6 +314,82 @@ export class FrameRenderer {
 		this.cursorFollowCamera = createCursorFollowCameraState();
 	}
 
+	private async createPixiApplication(
+		canvas: HTMLCanvasElement,
+	): Promise<{ app: Application; backend: ExportRenderBackend }> {
+		const baseOptions = {
+			canvas,
+			width: this.config.width,
+			height: this.config.height,
+			backgroundAlpha: 0,
+			antialias: true,
+			failIfMajorPerformanceCaveat: false,
+			resolution: 1,
+			autoDensity: true,
+			autoStart: false,
+			sharedTicker: false,
+			powerPreference: "high-performance" as const,
+		};
+
+		const preferredRenderBackend = this.config.preferredRenderBackend;
+		const backendOrder =
+			preferredRenderBackend === "webgpu"
+				? (["webgpu", "webgl"] as const)
+				: preferredRenderBackend === "webgl"
+					? (["webgl", "webgpu"] as const)
+					: (["webgl", "webgpu"] as const);
+		const failures: PixiRendererAttempt[] = [];
+
+		for (const backend of backendOrder) {
+			if (backend === "webgpu" && !(typeof navigator !== "undefined" && "gpu" in navigator)) {
+				failures.push({
+					backend,
+					message: "WebGPU runtime is unavailable in this environment.",
+				});
+				continue;
+			}
+
+			const app = new Application();
+			const initStarted = typeof performance === "undefined" ? Date.now() : performance.now();
+			try {
+				await initApplicationWithTimeout(
+					app,
+					{
+						...baseOptions,
+						preference: backend,
+					},
+					backend,
+				);
+				const elapsed = Math.round(
+					(typeof performance === "undefined" ? Date.now() : performance.now()) -
+						initStarted,
+				);
+				if (isCanvasRenderer(app)) {
+					throw new Error(
+						`Renderer initialized with unsupported fallback backend after ${elapsed}ms: ${app.renderer.constructor?.name ?? "unknown"}`,
+					);
+				}
+				return { app, backend };
+			} catch (error) {
+				const elapsed = Math.round(
+					(typeof performance === "undefined" ? Date.now() : performance.now()) -
+						initStarted,
+				);
+				failures.push({
+					backend,
+					message: `${toErrorMessage(error)} (after ${elapsed}ms)`,
+				});
+				console.warn(
+					`[FrameRenderer] ${backend} renderer unavailable after ${elapsed}ms; trying next backend.`,
+					error,
+				);
+				app.destroy(true);
+			}
+		}
+
+		throw new Error(summarizeRendererAttempts(failures));
+	}
+
 	async initialize(): Promise<void> {
 		let cursorOverlayEnabled = true;
 		try {
@@ -255,23 +418,9 @@ export class FrameRenderer {
 		}
 
 		// Initialize PixiJS with optimized settings for export performance
-		this.app = new Application();
-		await this.app.init({
-			canvas,
-			width: this.config.width,
-			height: this.config.height,
-			backgroundAlpha: 0,
-			antialias: true,
-			failIfMajorPerformanceCaveat: false,
-			resolution: 1,
-			autoDensity: true,
-			autoStart: false,
-			sharedTicker: false,
-			powerPreference: "high-performance",
-			...(this.config.preferredRenderBackend
-				? { preference: this.config.preferredRenderBackend }
-				: {}),
-		});
+		const { app, backend } = await this.createPixiApplication(canvas);
+		this.app = app;
+		console.log(`[FrameRenderer] Export renderer backend: ${backend}`);
 
 		// Setup containers
 		this.cameraContainer = new Container();
@@ -287,6 +436,11 @@ export class FrameRenderer {
 				style: this.config.cursorStyle ?? "tahoe",
 				smoothingFactor:
 					this.config.cursorSmoothing ?? DEFAULT_CURSOR_CONFIG.smoothingFactor,
+				springTuning: {
+					stiffnessMultiplier: this.config.cursorSpringStiffnessMultiplier,
+					dampingMultiplier: this.config.cursorSpringDampingMultiplier,
+					massMultiplier: this.config.cursorSpringMassMultiplier,
+				},
 				motionBlur: this.config.cursorMotionBlur ?? 0,
 				clickBounce: this.config.cursorClickBounce ?? DEFAULT_CURSOR_CONFIG.clickBounce,
 				clickBounceDuration:
@@ -301,13 +455,19 @@ export class FrameRenderer {
 		await this.setupWebcamSource();
 		await this.setupFrame();
 
-		// Setup blur filter for video container
-		this.blurFilter = new BlurFilter();
-		this.blurFilter.quality = 5;
-		this.blurFilter.resolution = this.app.renderer.resolution;
-		this.blurFilter.blur = 0;
-		this.motionBlurFilter = new MotionBlurFilter([0, 0], 5, 0);
-		this.videoContainer.filters = [this.blurFilter, this.motionBlurFilter];
+		if ((this.config.zoomMotionBlur ?? 0) > 0) {
+			this.zoomBlurFilter = new ZoomBlurFilter({ strength: 0, maxKernelSize: 13 });
+			this.motionBlurFilter = new MotionBlurFilter([0, 0], 5, 0);
+			this.videoContainer.filterArea = new Rectangle(
+				0,
+				0,
+				this.config.width,
+				this.config.height,
+			);
+			this.videoContainer.filters = [this.motionBlurFilter, this.zoomBlurFilter];
+		} else {
+			this.videoContainer.filters = null;
+		}
 
 		// Setup composite canvas for final output with shadows
 		this.compositeCanvas = document.createElement("canvas");
@@ -321,6 +481,19 @@ export class FrameRenderer {
 
 		if (!this.compositeCtx) {
 			throw new Error("Failed to get 2D context for composite canvas");
+		}
+
+		this.temporalAccumulationCanvas = document.createElement("canvas");
+		this.temporalAccumulationCanvas.width = this.config.width;
+		this.temporalAccumulationCanvas.height = this.config.height;
+		this.temporalAccumulationCtx = configureHighQuality2DContext(
+			this.temporalAccumulationCanvas.getContext("2d", {
+				willReadFrequently: true,
+			}),
+		);
+
+		if (!this.temporalAccumulationCtx) {
+			throw new Error("Failed to get 2D context for temporal accumulation canvas");
 		}
 
 		// Setup shadow canvas if needed
@@ -362,6 +535,22 @@ export class FrameRenderer {
 		}
 
 		this.backgroundCtx = bgCtx;
+		this.backgroundForwardFrameSource?.cancel();
+		void this.backgroundForwardFrameSource?.destroy();
+		this.backgroundForwardFrameSource = null;
+		this.backgroundForwardFrameSourceUrl = null;
+		this.backgroundForwardFrameDurationSec = null;
+		this.closeBackgroundDecodedFrame();
+		this.cleanupBackgroundSource?.();
+		this.cleanupBackgroundSource = null;
+		this.lastSyncedBackgroundLoopTimeSec = null;
+		if (this.backgroundVideoElement) {
+			this.backgroundVideoElement.pause();
+			this.backgroundVideoElement.src = "";
+			this.backgroundVideoElement.load();
+			this.backgroundVideoElement = null;
+		}
+		this.backgroundSeekPromise = null;
 
 		try {
 			// Check for video wallpaper first
@@ -371,21 +560,32 @@ export class FrameRenderer {
 					videoSrc = await getAssetPath(wallpaper.replace(/^\//, ""));
 				}
 
-				const video = document.createElement("video");
-				video.muted = true;
-				video.loop = true;
-				video.playsInline = true;
-				video.preload = "auto";
-				video.src = videoSrc;
+				try {
+					const frameSource = new ForwardFrameSource();
+					const metadata = await frameSource.initialize(videoSrc);
+					this.backgroundForwardFrameSource = frameSource;
+					this.backgroundForwardFrameSourceUrl = videoSrc;
+					this.backgroundForwardFrameDurationSec = getEffectiveVideoStreamDurationSeconds(
+						{
+							duration: metadata?.duration,
+							streamDuration: metadata?.streamDuration,
+						},
+					);
+					this.backgroundVideoElement = null;
+					this.backgroundSeekPromise = null;
+					this.lastSyncedBackgroundLoopTimeSec = null;
+					this.backgroundSprite = bgCanvas;
+					return;
+				} catch (error) {
+					console.warn(
+						"[FrameRenderer] Decoder-backed video wallpaper unavailable during export; falling back to media element sync:",
+						error,
+					);
+				}
 
-				await new Promise<void>((resolve, reject) => {
-					video.onloadeddata = () => resolve();
-					video.onerror = () =>
-						reject(new Error(`Failed to load video wallpaper: ${wallpaper}`));
-				});
-
-				this.backgroundVideoElement = video;
-				this.drawVideoFrameToBackground();
+				if (!(await this.loadBackgroundMediaElementSource(videoSrc, wallpaper))) {
+					throw new Error(`Failed to load video wallpaper: ${wallpaper}`);
+				}
 				this.backgroundSprite = bgCanvas;
 				return;
 			}
@@ -510,12 +710,24 @@ export class FrameRenderer {
 
 	private drawVideoFrameToBackground(): void {
 		const video = this.backgroundVideoElement;
+		if (!video) return;
+
+		this.drawBackgroundSourceToCanvas(video, video.videoWidth, video.videoHeight);
+	}
+
+	private drawBackgroundSourceToCanvas(
+		source: CanvasImageSource,
+		sourceWidth: number,
+		sourceHeight: number,
+	): void {
 		const ctx = this.backgroundCtx;
-		if (!video || !ctx) return;
+		if (!ctx) return;
 
 		const w = this.config.width;
 		const h = this.config.height;
-		const videoAspect = video.videoWidth / video.videoHeight;
+		const safeSourceWidth = Math.max(1, sourceWidth);
+		const safeSourceHeight = Math.max(1, sourceHeight);
+		const videoAspect = safeSourceWidth / safeSourceHeight;
 		const canvasAspect = w / h;
 
 		let drawWidth: number, drawHeight: number, drawX: number, drawY: number;
@@ -532,7 +744,249 @@ export class FrameRenderer {
 		}
 
 		ctx.clearRect(0, 0, w, h);
-		ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
+		ctx.drawImage(source, drawX, drawY, drawWidth, drawHeight);
+	}
+
+	private closeBackgroundDecodedFrame(): void {
+		if (!this.backgroundDecodedFrame) {
+			return;
+		}
+
+		this.backgroundDecodedFrame.close();
+		this.backgroundDecodedFrame = null;
+	}
+
+	private async restartBackgroundForwardFrameSource(): Promise<void> {
+		const sourceUrl = this.backgroundForwardFrameSourceUrl;
+		if (!sourceUrl) {
+			return;
+		}
+
+		const nextSource = new ForwardFrameSource();
+		const metadata = await nextSource.initialize(sourceUrl);
+		const previousSource = this.backgroundForwardFrameSource;
+
+		this.backgroundForwardFrameSource = nextSource;
+		const effectiveDuration = getEffectiveVideoStreamDurationSeconds({
+			duration: metadata?.duration,
+			streamDuration: metadata?.streamDuration,
+		});
+		this.backgroundForwardFrameDurationSec =
+			Number.isFinite(effectiveDuration) && effectiveDuration > 0 ? effectiveDuration : null;
+		this.lastSyncedBackgroundLoopTimeSec = null;
+
+		previousSource?.cancel();
+		void previousSource?.destroy();
+	}
+
+	private async syncBackgroundFrame(timeSeconds: number): Promise<void> {
+		if (this.backgroundForwardFrameSource) {
+			const duration = this.backgroundForwardFrameDurationSec;
+			const shouldLoop = Number.isFinite(duration) && (duration ?? 0) > 0;
+			let normalizedTargetTime = shouldLoop
+				? ((timeSeconds % duration!) + duration!) % duration!
+				: Math.max(0, timeSeconds);
+
+			if (
+				shouldLoop &&
+				this.lastSyncedBackgroundLoopTimeSec !== null &&
+				normalizedTargetTime + 0.001 < this.lastSyncedBackgroundLoopTimeSec
+			) {
+				try {
+					await this.restartBackgroundForwardFrameSource();
+				} catch (error) {
+					console.warn(
+						"[FrameRenderer] Unable to restart looping video wallpaper decoder during export:",
+						error,
+					);
+				}
+			}
+
+			let decodedFrame: VideoFrame | null = null;
+			try {
+				decodedFrame =
+					await this.backgroundForwardFrameSource.getFrameAtTime(normalizedTargetTime);
+			} catch (error) {
+				console.warn(
+					"[FrameRenderer] Decoder-backed video wallpaper failed during export; falling back to media element sync:",
+					error,
+				);
+				if (await this.fallbackBackgroundForwardFrameSourceToMediaElement()) {
+					await this.syncBackgroundFrame(timeSeconds);
+				}
+				return;
+			}
+			const resolvedDecodedDuration =
+				this.backgroundForwardFrameSource.getResolvedDurationSec();
+			if (
+				shouldLoop &&
+				this.backgroundForwardFrameSource.hasReachedEndOfStream() &&
+				Number.isFinite(resolvedDecodedDuration) &&
+				(resolvedDecodedDuration ?? 0) > 0 &&
+				normalizedTargetTime > (resolvedDecodedDuration ?? 0) + 0.001
+			) {
+				this.backgroundForwardFrameDurationSec = resolvedDecodedDuration ?? null;
+				this.closeBackgroundDecodedFrame();
+				try {
+					await this.restartBackgroundForwardFrameSource();
+					normalizedTargetTime =
+						((timeSeconds % resolvedDecodedDuration!) + resolvedDecodedDuration!) %
+						resolvedDecodedDuration!;
+					const restartedFrame =
+						await this.backgroundForwardFrameSource.getFrameAtTime(
+							normalizedTargetTime,
+						);
+					this.backgroundDecodedFrame = restartedFrame;
+					if (restartedFrame) {
+						this.lastSyncedBackgroundLoopTimeSec = normalizedTargetTime;
+						this.drawBackgroundSourceToCanvas(
+							restartedFrame,
+							restartedFrame.displayWidth,
+							restartedFrame.displayHeight,
+						);
+					}
+					return;
+				} catch (error) {
+					console.warn(
+						"[FrameRenderer] Unable to wrap looping video wallpaper at decoded EOF during export:",
+						error,
+					);
+					if (await this.fallbackBackgroundForwardFrameSourceToMediaElement()) {
+						await this.syncBackgroundFrame(timeSeconds);
+					}
+					return;
+				}
+			}
+			this.closeBackgroundDecodedFrame();
+			this.backgroundDecodedFrame = decodedFrame;
+			if (decodedFrame) {
+				this.lastSyncedBackgroundLoopTimeSec = normalizedTargetTime;
+				this.drawBackgroundSourceToCanvas(
+					decodedFrame,
+					decodedFrame.displayWidth,
+					decodedFrame.displayHeight,
+				);
+			}
+			return;
+		}
+
+		await this.syncBackgroundVideo(timeSeconds);
+	}
+
+	private async fallbackBackgroundForwardFrameSourceToMediaElement(): Promise<boolean> {
+		const sourceUrl = this.backgroundForwardFrameSourceUrl;
+		this.backgroundForwardFrameSource?.cancel();
+		void this.backgroundForwardFrameSource?.destroy();
+		this.backgroundForwardFrameSource = null;
+		this.backgroundForwardFrameSourceUrl = null;
+		this.backgroundForwardFrameDurationSec = null;
+		this.closeBackgroundDecodedFrame();
+		this.lastSyncedBackgroundLoopTimeSec = null;
+
+		return sourceUrl ? this.loadBackgroundMediaElementSource(sourceUrl, sourceUrl) : false;
+	}
+
+	private async loadBackgroundMediaElementSource(
+		videoSrc: string,
+		errorLabel: string,
+	): Promise<boolean> {
+		if (this.backgroundVideoElement) {
+			try {
+				this.backgroundVideoElement.pause();
+				this.backgroundVideoElement.src = "";
+				this.backgroundVideoElement.load();
+			} catch {
+				// Ignore media element teardown errors during export fallback.
+			}
+			this.backgroundVideoElement = null;
+		}
+		this.backgroundSeekPromise = null;
+		this.cleanupBackgroundSource?.();
+		this.cleanupBackgroundSource = null;
+
+		let backgroundSource: Awaited<ReturnType<typeof resolveMediaElementSource>>;
+		try {
+			backgroundSource = await resolveMediaElementSource(videoSrc);
+		} catch (error) {
+			console.warn(
+				"[FrameRenderer] Unable to resolve video wallpaper fallback source:",
+				error,
+			);
+			return false;
+		}
+		this.cleanupBackgroundSource = backgroundSource.revoke;
+
+		const video = document.createElement("video");
+		video.muted = true;
+		video.loop = true;
+		video.playsInline = true;
+		video.preload = "auto";
+		video.src = backgroundSource.src;
+		video.load();
+
+		const ready = await new Promise<boolean>((resolve) => {
+			let settled = false;
+			let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+			function cleanup() {
+				if (timeoutId !== null) {
+					clearTimeout(timeoutId);
+				}
+				video.removeEventListener("loadeddata", onReady);
+				video.removeEventListener("canplay", onReady);
+				video.removeEventListener("error", onError);
+			}
+
+			function settle(value: boolean) {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				cleanup();
+				resolve(value);
+			}
+			function onReady() {
+				if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+					return;
+				}
+				settle(true);
+			}
+			function onError() {
+				settle(false);
+			}
+
+			video.addEventListener("loadeddata", onReady);
+			video.addEventListener("canplay", onReady);
+			video.addEventListener("error", onError);
+			timeoutId = setTimeout(() => {
+				console.warn(
+					`[FrameRenderer] Video wallpaper media element fallback did not become ready within ${BACKGROUND_MEDIA_ELEMENT_READY_TIMEOUT_MS}ms`,
+				);
+				settle(false);
+			}, BACKGROUND_MEDIA_ELEMENT_READY_TIMEOUT_MS);
+			onReady();
+		});
+
+		if (!ready) {
+			console.warn(`[FrameRenderer] Failed to load video wallpaper: ${errorLabel}`);
+			try {
+				video.pause();
+				video.src = "";
+				video.load();
+			} catch {
+				// Ignore media element teardown errors on failed fallback.
+			}
+			backgroundSource.revoke();
+			if (this.cleanupBackgroundSource === backgroundSource.revoke) {
+				this.cleanupBackgroundSource = null;
+			}
+			return false;
+		}
+
+		this.backgroundVideoElement = video;
+		this.lastSyncedBackgroundLoopTimeSec = null;
+		this.drawVideoFrameToBackground();
+		return true;
 	}
 
 	private async syncBackgroundVideo(timeSeconds: number): Promise<void> {
@@ -542,14 +996,120 @@ export class FrameRenderer {
 		if (video.duration && Number.isFinite(video.duration)) {
 			const targetTime = timeSeconds % video.duration;
 			if (Math.abs(video.currentTime - targetTime) > 0.01) {
-				video.currentTime = targetTime;
-				await new Promise<void>((resolve) => {
-					const onSeeked = () => {
-						video.removeEventListener("seeked", onSeeked);
+				if (this.backgroundSeekPromise) {
+					await this.backgroundSeekPromise;
+				}
+
+				this.backgroundSeekPromise = new Promise<void>((resolve) => {
+					let settled = false;
+					let fallbackTimeout: number | null = null;
+					let animationFrameRequestId: number | null = null;
+					let videoFrameRequestId: number | null = null;
+
+					const finish = () => {
+						if (settled) {
+							return;
+						}
+						settled = true;
+						cleanup();
 						resolve();
 					};
-					video.addEventListener("seeked", onSeeked);
+
+					const waitForPresentedFrame = () => {
+						const requestVideoFrameCallback = (
+							video as HTMLVideoElement & {
+								requestVideoFrameCallback?: (
+									callback: (
+										now: DOMHighResTimeStamp,
+										metadata: VideoFrameCallbackMetadata,
+									) => void,
+								) => number;
+								cancelVideoFrameCallback?: (handle: number) => void;
+							}
+						).requestVideoFrameCallback;
+
+						animationFrameRequestId = requestAnimationFrame(() => {
+							animationFrameRequestId = null;
+							finish();
+						});
+
+						if (typeof requestVideoFrameCallback === "function") {
+							videoFrameRequestId = requestVideoFrameCallback.call(video, () => {
+								videoFrameRequestId = null;
+								finish();
+							});
+						}
+					};
+
+					const handleMediaReady = () => {
+						if (
+							!video.seeking &&
+							Math.abs(video.currentTime - targetTime) <= 0.01 &&
+							video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+						) {
+							waitForPresentedFrame();
+						}
+					};
+
+					const cleanup = () => {
+						video.removeEventListener("seeked", waitForPresentedFrame);
+						video.removeEventListener("loadeddata", handleMediaReady);
+						video.removeEventListener("canplay", handleMediaReady);
+						video.removeEventListener("error", finish);
+						if (animationFrameRequestId !== null) {
+							cancelAnimationFrame(animationFrameRequestId);
+							animationFrameRequestId = null;
+						}
+						if (
+							videoFrameRequestId !== null &&
+							typeof (
+								video as HTMLVideoElement & {
+									cancelVideoFrameCallback?: (handle: number) => void;
+								}
+							).cancelVideoFrameCallback === "function"
+						) {
+							(
+								video as HTMLVideoElement & {
+									cancelVideoFrameCallback: (handle: number) => void;
+								}
+							).cancelVideoFrameCallback(videoFrameRequestId);
+							videoFrameRequestId = null;
+						}
+						if (fallbackTimeout !== null) {
+							window.clearTimeout(fallbackTimeout);
+						}
+					};
+
+					video.addEventListener("seeked", waitForPresentedFrame, { once: true });
+					video.addEventListener("loadeddata", handleMediaReady, { once: true });
+					video.addEventListener("canplay", handleMediaReady, { once: true });
+					video.addEventListener("error", finish, { once: true });
+
+					fallbackTimeout = window.setTimeout(() => {
+						finish();
+					}, 50);
+
+					try {
+						video.currentTime = targetTime;
+					} catch {
+						finish();
+						return;
+					}
+
+					if (
+						!video.seeking &&
+						Math.abs(video.currentTime - targetTime) <= 0.001 &&
+						video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+					) {
+						waitForPresentedFrame();
+					}
 				});
+
+				try {
+					await this.backgroundSeekPromise;
+				} finally {
+					this.backgroundSeekPromise = null;
+				}
 			}
 		}
 		this.drawVideoFrameToBackground();
@@ -575,6 +1135,10 @@ export class FrameRenderer {
 	private async resolveWallpaperForExport(wallpaper: string): Promise<string> {
 		if (!wallpaper) {
 			return wallpaper;
+		}
+
+		if (isVideoWallpaperSource(wallpaper)) {
+			return getExportableVideoUrl(wallpaper);
 		}
 
 		if (
@@ -691,8 +1255,16 @@ export class FrameRenderer {
 	}
 
 	private async syncWebcamFrame(targetTime: number): Promise<void> {
+		const webcamTargetTime = getWebcamMediaTargetTimeSeconds({
+			currentTime: targetTime,
+			webcamDuration: Number.isFinite(this.webcamVideoElement?.duration)
+				? this.webcamVideoElement?.duration
+				: null,
+			timeOffsetMs: this.config.webcam?.timeOffsetMs,
+		});
+
 		if (this.webcamForwardFrameSource) {
-			const clampedTime = clampMediaTimeToDuration(targetTime, null);
+			const clampedTime = clampMediaTimeToDuration(webcamTargetTime, null);
 			const decodedFrame = await this.webcamForwardFrameSource.getFrameAtTime(clampedTime);
 			this.closeWebcamDecodedFrame();
 			this.webcamDecodedFrame = decodedFrame;
@@ -708,7 +1280,7 @@ export class FrameRenderer {
 		}
 
 		const clampedTime = clampMediaTimeToDuration(
-			targetTime,
+			webcamTargetTime,
 			Number.isFinite(webcamVideo.duration) ? webcamVideo.duration : null,
 		);
 
@@ -879,22 +1451,14 @@ export class FrameRenderer {
 		videoFrame: VideoFrame,
 		timestamp: number,
 		cursorTimestamp = timestamp,
+		frameDurationUs?: number,
+		backgroundTimelineTimestamp = timestamp,
 	): Promise<void> {
 		if (!this.app || !this.videoContainer || !this.cameraContainer) {
 			throw new Error("Renderer not initialized");
 		}
 
 		this.currentVideoTime = timestamp / 1000000;
-
-		if (this.webcamForwardFrameSource || this.webcamVideoElement) {
-			const targetTime = Math.max(0, this.currentVideoTime);
-			await this.syncWebcamFrame(targetTime);
-		}
-
-		// Sync video wallpaper frame
-		if (this.backgroundVideoElement) {
-			await this.syncBackgroundVideo(this.currentVideoTime);
-		}
 
 		// Create or update video sprite from VideoFrame
 		if (!this.videoSprite) {
@@ -920,6 +1484,143 @@ export class FrameRenderer {
 		const layoutCache = this.layoutCache;
 		if (!layoutCache) {
 			return;
+		}
+
+		const temporalSnapshot =
+			TEMPORAL_ZOOM_MOTION_BLUR_ENABLED &&
+			(this.config.zoomTemporalMotionBlur ?? 0) > 0 &&
+			typeof frameDurationUs === "number" &&
+			frameDurationUs > 0
+				? await this.renderTemporalMotionBlurFrame(
+						timestamp,
+						cursorTimestamp,
+						backgroundTimelineTimestamp,
+						frameDurationUs,
+						layoutCache,
+					)
+				: null;
+
+		if (temporalSnapshot) {
+			extensionHost.setSmoothedCursor(
+				temporalSnapshot.smoothedCursor
+					? {
+							timeMs: temporalSnapshot.timeMs,
+							cx: temporalSnapshot.smoothedCursor.cx,
+							cy: temporalSnapshot.smoothedCursor.cy,
+							trail: temporalSnapshot.smoothedCursor.trail,
+						}
+					: null,
+			);
+
+			this.drawFrame();
+
+			if (
+				this.config.annotationRegions &&
+				this.config.annotationRegions.length > 0 &&
+				this.compositeCtx
+			) {
+				const scaleX = this.config.width / BASE_PREVIEW_WIDTH;
+				const scaleY = this.config.height / BASE_PREVIEW_HEIGHT;
+				const scaleFactor = (scaleX + scaleY) / 2;
+
+				await renderAnnotations(
+					this.compositeCtx,
+					this.config.annotationRegions,
+					this.config.width,
+					this.config.height,
+					temporalSnapshot.timeMs,
+					scaleFactor,
+				);
+			}
+
+			if (
+				this.config.autoCaptions &&
+				this.config.autoCaptions.length > 0 &&
+				this.config.autoCaptionSettings &&
+				this.compositeCtx
+			) {
+				renderCaptions(
+					this.compositeCtx,
+					this.config.autoCaptions,
+					this.config.autoCaptionSettings,
+					this.config.width,
+					this.config.height,
+					temporalSnapshot.timeMs,
+				);
+			}
+
+			if (this.compositeCtx) {
+				const maskRect = this.layoutCache?.maskRect;
+				const hookParams = {
+					width: this.config.width,
+					height: this.config.height,
+					timeMs: temporalSnapshot.timeMs,
+					durationMs: 0,
+					cursor: temporalSnapshot.smoothedCursor
+						? {
+								cx: temporalSnapshot.smoothedCursor.cx,
+								cy: temporalSnapshot.smoothedCursor.cy,
+								interactionType: this.getCursorPosition(
+									temporalSnapshot.cursorTimeMs,
+								)?.interactionType,
+							}
+						: this.getCursorPosition(temporalSnapshot.cursorTimeMs),
+					smoothedCursor: temporalSnapshot.smoothedCursor,
+					videoLayout: maskRect
+						? {
+								maskRect: {
+									x: maskRect.x,
+									y: maskRect.y,
+									width: maskRect.width,
+									height: maskRect.height,
+								},
+								borderRadius: this.config.borderRadius ?? 0,
+								padding: this.config.padding ?? 0,
+							}
+						: undefined,
+					zoom: temporalSnapshot.zoom,
+					shadow: {
+						enabled: this.config.showShadow,
+						intensity: this.config.shadowIntensity,
+					},
+					sceneTransform: temporalSnapshot.sceneTransform,
+				};
+
+				this.compositeCtx.save();
+				applyCanvasSceneTransform(this.compositeCtx, temporalSnapshot.sceneTransform);
+				executeExtensionRenderHooks("post-video", this.compositeCtx, hookParams);
+				executeExtensionRenderHooks("post-zoom", this.compositeCtx, hookParams);
+				executeExtensionRenderHooks("post-cursor", this.compositeCtx, hookParams);
+				this.emitCursorInteractions(temporalSnapshot.cursorTimeMs);
+				executeExtensionCursorEffects(
+					this.compositeCtx,
+					temporalSnapshot.timeMs,
+					this.config.width,
+					this.config.height,
+					{
+						zoom: hookParams.zoom,
+						sceneTransform: hookParams.sceneTransform,
+						videoLayout: hookParams.videoLayout,
+					},
+				);
+				this.compositeCtx.restore();
+
+				executeExtensionRenderHooks("post-webcam", this.compositeCtx, hookParams);
+				executeExtensionRenderHooks("post-annotations", this.compositeCtx, hookParams);
+				executeExtensionRenderHooks("final", this.compositeCtx, hookParams);
+			}
+
+			return;
+		}
+
+		if (this.webcamForwardFrameSource || this.webcamVideoElement) {
+			const targetTime = Math.max(0, this.currentVideoTime);
+			await this.syncWebcamFrame(targetTime);
+		}
+
+		// Sync video wallpaper frame
+		if (this.backgroundForwardFrameSource || this.backgroundVideoElement) {
+			await this.syncBackgroundFrame(Math.max(0, backgroundTimelineTimestamp / 1_000_000));
 		}
 
 		const timeMs = this.currentVideoTime * 1000;
@@ -956,16 +1657,13 @@ export class FrameRenderer {
 
 		const TICKS_PER_FRAME = 1;
 
-		let maxMotionIntensity = 0;
 		for (let i = 0; i < TICKS_PER_FRAME; i++) {
-			const motionIntensity = this.updateAnimationState(timeMs);
-			maxMotionIntensity = Math.max(maxMotionIntensity, motionIntensity);
+			this.updateAnimationState(timeMs);
 		}
 
-		// Apply transform once with maximum motion intensity from all ticks
 		applyZoomTransform({
 			cameraContainer: this.cameraContainer,
-			blurFilter: this.blurFilter,
+			zoomBlurFilter: this.zoomBlurFilter,
 			motionBlurFilter: this.motionBlurFilter,
 			stageSize: layoutCache.stageSize,
 			baseMask: layoutCache.maskRect,
@@ -973,10 +1671,9 @@ export class FrameRenderer {
 			zoomProgress: this.animationState.progress,
 			focusX: this.animationState.focusX,
 			focusY: this.animationState.focusY,
-			motionIntensity: maxMotionIntensity,
-			motionVector: this.lastMotionVector,
 			isPlaying: true,
 			motionBlurAmount: this.config.zoomMotionBlur ?? 0,
+			motionBlurTuning: this.config.zoomMotionBlurTuning,
 			transformOverride: {
 				scale: this.animationState.appliedScale,
 				x: this.animationState.x,
@@ -1179,55 +1876,28 @@ export class FrameRenderer {
 	private updateLayout(): void {
 		if (!this.app || !this.videoSprite || !this.maskGraphics || !this.videoContainer) return;
 
-		const { width, height } = this.config;
-		const { cropRegion, borderRadius = 0, padding = 0 } = this.config;
-		const videoWidth = this.config.videoWidth;
-		const videoHeight = this.config.videoHeight;
+		const {
+			width,
+			height,
+			cropRegion,
+			borderRadius = 0,
+			padding = 0,
+			videoWidth,
+			videoHeight,
+		} = this.config;
 
-		// Calculate cropped video dimensions
-		const cropStartX = cropRegion.x;
-		const cropStartY = cropRegion.y;
-		const cropEndX = cropRegion.x + cropRegion.width;
-		const cropEndY = cropRegion.y + cropRegion.height;
+		const layout = computePaddedLayout({
+			width,
+			height,
+			padding,
+			frameInsets: this.frameInsets,
+			cropRegion,
+			videoWidth,
+			videoHeight,
+		});
 
-		const croppedVideoWidth = videoWidth * (cropEndX - cropStartX);
-		const croppedVideoHeight = videoHeight * (cropEndY - cropStartY);
-
-		const paddingScale = 1.0 - (padding / 100) * 0.4;
-		const viewportWidth = width * paddingScale;
-		const viewportHeight = height * paddingScale;
-
-		// When a device frame is active, scale to fit the ENTIRE frame (video + bezels)
-		const insets = this.frameInsets;
-		const screenFracW = insets ? 1 - insets.left - insets.right : 1;
-		const screenFracH = insets ? 1 - insets.top - insets.bottom : 1;
-		const fullFrameVideoW = croppedVideoWidth / screenFracW;
-		const fullFrameVideoH = croppedVideoHeight / screenFracH;
-
-		const scale = Math.min(viewportWidth / fullFrameVideoW, viewportHeight / fullFrameVideoH);
-
-		this.videoSprite.scale.set(scale);
-
-		const fullVideoDisplayWidth = videoWidth * scale;
-		const fullVideoDisplayHeight = videoHeight * scale;
-		const croppedDisplayWidth = croppedVideoWidth * scale;
-		const croppedDisplayHeight = croppedVideoHeight * scale;
-
-		// Center the full frame (video + bezels) in the output canvas
-		const fullFrameDisplayW = fullFrameVideoW * scale;
-		const fullFrameDisplayH = fullFrameVideoH * scale;
-		const frameCenterX = (width - fullFrameDisplayW) / 2;
-		const frameCenterY = (height - fullFrameDisplayH) / 2;
-		const centerOffsetX = insets
-			? frameCenterX + insets.left * fullFrameDisplayW
-			: (width - croppedDisplayWidth) / 2;
-		const centerOffsetY = insets
-			? frameCenterY + insets.top * fullFrameDisplayH
-			: (height - croppedDisplayHeight) / 2;
-
-		const spriteX = centerOffsetX - cropRegion.x * fullVideoDisplayWidth;
-		const spriteY = centerOffsetY - cropRegion.y * fullVideoDisplayHeight;
-		this.videoSprite.position.set(spriteX, spriteY);
+		this.videoSprite.scale.set(layout.scale);
+		this.videoSprite.position.set(layout.spriteX, layout.spriteY);
 
 		this.videoContainer.position.set(0, 0);
 
@@ -1240,10 +1910,10 @@ export class FrameRenderer {
 
 		this.maskGraphics.clear();
 		drawSquircleOnGraphics(this.maskGraphics, {
-			x: centerOffsetX,
-			y: centerOffsetY,
-			width: croppedDisplayWidth,
-			height: croppedDisplayHeight,
+			x: layout.centerOffsetX,
+			y: layout.centerOffsetY,
+			width: layout.croppedDisplayWidth,
+			height: layout.croppedDisplayHeight,
 			radius: scaledBorderRadius,
 		});
 		this.maskGraphics.fill({ color: 0xffffff });
@@ -1251,14 +1921,17 @@ export class FrameRenderer {
 		// Cache layout info
 		this.layoutCache = {
 			stageSize: { width, height },
-			videoSize: { width: croppedVideoWidth, height: croppedVideoHeight },
-			baseScale: scale,
-			baseOffset: { x: spriteX, y: spriteY },
+			videoSize: {
+				width: videoWidth * cropRegion.width,
+				height: videoHeight * cropRegion.height,
+			},
+			baseScale: layout.scale,
+			baseOffset: { x: layout.spriteX, y: layout.spriteY },
 			maskRect: {
-				x: centerOffsetX,
-				y: centerOffsetY,
-				width: croppedDisplayWidth,
-				height: croppedDisplayHeight,
+				x: layout.centerOffsetX,
+				y: layout.centerOffsetY,
+				width: layout.croppedDisplayWidth,
+				height: layout.croppedDisplayHeight,
 				sourceCrop: cropRegion,
 			},
 		};
@@ -1272,6 +1945,8 @@ export class FrameRenderer {
 			timeMs,
 			{
 				connectZooms: this.config.connectZooms,
+				zoomInDurationMs: this.config.zoomInDurationMs,
+				zoomOutDurationMs: this.config.zoomOutDurationMs,
 			},
 		);
 
@@ -1370,7 +2045,11 @@ export class FrameRenderer {
 			this.lastContentTimeMs !== null ? timeMs - this.lastContentTimeMs : 1000 / 60;
 		this.lastContentTimeMs = timeMs;
 
-		const zoomSpringConfig = getZoomSpringConfig(this.config.zoomSmoothness);
+		const zoomSpringConfig = getZoomSpringConfig(this.config.zoomSmoothness, {
+			stiffnessMultiplier: this.config.cameraSpringStiffnessMultiplier,
+			dampingMultiplier: this.config.cameraSpringDampingMultiplier,
+			massMultiplier: this.config.cameraSpringMassMultiplier,
+		});
 
 		if (this.config.zoomClassicMode) {
 			state.appliedScale = projectedTransform.scale;
@@ -1400,16 +2079,156 @@ export class FrameRenderer {
 			);
 		}
 
-		this.lastMotionVector = {
-			x: state.x - prevX,
-			y: state.y - prevY,
-		};
-
 		return Math.max(
 			Math.abs(state.appliedScale - prevScale),
 			Math.abs(state.x - prevX) / Math.max(1, this.layoutCache.stageSize.width),
 			Math.abs(state.y - prevY) / Math.max(1, this.layoutCache.stageSize.height),
 		);
+	}
+
+	private async renderSceneSample(
+		timestamp: number,
+		cursorTimestamp: number,
+		backgroundTimelineTimestamp: number,
+		layoutCache: LayoutCache,
+		useVelocityMotionBlur: boolean,
+	): Promise<RenderSnapshot> {
+		if (!this.app || !this.cameraContainer) {
+			throw new Error("Renderer not initialized");
+		}
+
+		this.currentVideoTime = timestamp / 1_000_000;
+
+		if (this.webcamForwardFrameSource || this.webcamVideoElement) {
+			await this.syncWebcamFrame(Math.max(0, this.currentVideoTime));
+		}
+
+		if (this.backgroundForwardFrameSource || this.backgroundVideoElement) {
+			await this.syncBackgroundFrame(Math.max(0, backgroundTimelineTimestamp / 1_000_000));
+		}
+
+		const timeMs = this.currentVideoTime * 1000;
+		const cursorTimeMs = cursorTimestamp / 1000;
+
+		if (this.cursorOverlay) {
+			this.cursorOverlay.update(
+				this.config.cursorTelemetry ?? [],
+				cursorTimeMs,
+				layoutCache.maskRect,
+				this.config.showCursor ?? true,
+				false,
+			);
+		}
+
+		const smoothedCursor = mapSmoothedCursorToCanvasNormalized(
+			this.cursorOverlay?.getSmoothedCursorSnapshot() ?? null,
+			{
+				maskRect: layoutCache.maskRect,
+				canvasWidth: this.config.width,
+				canvasHeight: this.config.height,
+			},
+		);
+
+		this.updateAnimationState(timeMs);
+
+		applyZoomTransform({
+			cameraContainer: this.cameraContainer,
+			zoomBlurFilter: this.zoomBlurFilter,
+			motionBlurFilter: this.motionBlurFilter,
+			stageSize: layoutCache.stageSize,
+			baseMask: layoutCache.maskRect,
+			zoomScale: this.animationState.scale,
+			zoomProgress: this.animationState.progress,
+			focusX: this.animationState.focusX,
+			focusY: this.animationState.focusY,
+			isPlaying: true,
+			motionBlurAmount: useVelocityMotionBlur ? (this.config.zoomMotionBlur ?? 0) : 0,
+			motionBlurTuning: this.config.zoomMotionBlurTuning,
+			transformOverride: {
+				scale: this.animationState.appliedScale,
+				x: this.animationState.x,
+				y: this.animationState.y,
+			},
+			motionBlurState: this.motionBlurState,
+			frameTimeMs: timeMs,
+		});
+
+		this.app.renderer.render(this.app.stage);
+		this.compositeWithShadows();
+
+		return {
+			timeMs,
+			cursorTimeMs,
+			smoothedCursor,
+			sceneTransform: {
+				scale: this.animationState.appliedScale,
+				x: this.animationState.x,
+				y: this.animationState.y,
+			},
+			zoom: {
+				scale: this.animationState.scale,
+				focusX: this.animationState.focusX,
+				focusY: this.animationState.focusY,
+				progress: this.animationState.progress,
+			},
+		};
+	}
+
+	private async renderTemporalMotionBlurFrame(
+		timestamp: number,
+		cursorTimestamp: number,
+		backgroundTimelineTimestamp: number,
+		frameDurationUs: number,
+		layoutCache: LayoutCache,
+	): Promise<RenderSnapshot | null> {
+		if (!this.compositeCanvas || !this.compositeCtx || !this.temporalAccumulationCtx) {
+			return null;
+		}
+
+		const blurConfig = getTemporalMotionBlurConfig(this.config.zoomTemporalMotionBlur, {
+			sampleCount: this.config.zoomMotionBlurSampleCount,
+			shutterFraction: this.config.zoomMotionBlurShutterFraction,
+		});
+		if (!blurConfig) {
+			return null;
+		}
+
+		const samplePlan = buildTemporalSamplePlanUs(frameDurationUs, blurConfig);
+
+		this.temporalAccumulationCtx.clearRect(0, 0, this.config.width, this.config.height);
+
+		let centerSnapshot: RenderSnapshot | null = null;
+		let lastSnapshot: RenderSnapshot | null = null;
+
+		for (const { offsetUs: sampleOffsetUs, weight } of samplePlan) {
+			const sampleTimestamp = Math.max(0, timestamp + sampleOffsetUs);
+			const sampleCursorTimestamp = Math.max(0, cursorTimestamp + sampleOffsetUs);
+			const sampleBackgroundTimelineTimestamp = Math.max(
+				0,
+				backgroundTimelineTimestamp + sampleOffsetUs,
+			);
+			const snapshot = await this.renderSceneSample(
+				sampleTimestamp,
+				sampleCursorTimestamp,
+				sampleBackgroundTimelineTimestamp,
+				layoutCache,
+				false,
+			);
+			lastSnapshot = snapshot;
+			if (Math.abs(sampleOffsetUs) < 0.0001) {
+				centerSnapshot = snapshot;
+			}
+
+			this.temporalAccumulationCtx.save();
+			this.temporalAccumulationCtx.globalCompositeOperation = "lighter";
+			this.temporalAccumulationCtx.globalAlpha = weight;
+			this.temporalAccumulationCtx.drawImage(this.compositeCanvas, 0, 0);
+			this.temporalAccumulationCtx.restore();
+		}
+		this.compositeCtx.clearRect(0, 0, this.config.width, this.config.height);
+		this.compositeCtx.drawImage(this.temporalAccumulationCanvas!, 0, 0);
+
+		return centerSnapshot ?? lastSnapshot;
 	}
 
 	private compositeWithShadows(): void {
@@ -1653,9 +2472,14 @@ export class FrameRenderer {
 				: "videoHeight" in webcamFrameSource
 					? webcamFrameSource.videoHeight
 					: webcamFrameSource.height) || size;
-		const coverScale = Math.max(size / sourceWidth, size / sourceHeight);
-		const drawWidth = sourceWidth * coverScale;
-		const drawHeight = sourceHeight * coverScale;
+		const { sx, sy, sw, sh } = getWebcamCropSourceRect(
+			webcam.cropRegion,
+			sourceWidth,
+			sourceHeight,
+		);
+		const coverScale = Math.max(size / sw, size / sh);
+		const drawWidth = sw * coverScale;
+		const drawHeight = sh * coverScale;
 		const drawX = (size - drawWidth) / 2;
 		const drawY = (size - drawHeight) / 2;
 
@@ -1666,10 +2490,30 @@ export class FrameRenderer {
 			bubbleCtx.save();
 			bubbleCtx.translate(size, 0);
 			bubbleCtx.scale(-1, 1);
-			bubbleCtx.drawImage(webcamFrameSource, drawX, drawY, drawWidth, drawHeight);
+			bubbleCtx.drawImage(
+				webcamFrameSource,
+				sx,
+				sy,
+				sw,
+				sh,
+				drawX,
+				drawY,
+				drawWidth,
+				drawHeight,
+			);
 			bubbleCtx.restore();
 		} else {
-			bubbleCtx.drawImage(webcamFrameSource, drawX, drawY, drawWidth, drawHeight);
+			bubbleCtx.drawImage(
+				webcamFrameSource,
+				sx,
+				sy,
+				sw,
+				sh,
+				drawX,
+				drawY,
+				drawWidth,
+				drawHeight,
+			);
 		}
 		bubbleCtx.restore();
 
@@ -1718,10 +2562,12 @@ export class FrameRenderer {
 			});
 			this.app = null;
 		}
+		this.zoomBlurFilter?.destroy();
+		this.motionBlurFilter?.destroy();
 		this.cameraContainer = null;
 		this.videoContainer = null;
 		this.maskGraphics = null;
-		this.blurFilter = null;
+		this.zoomBlurFilter = null;
 		this.motionBlurFilter = null;
 		if (this.cursorOverlay) {
 			this.cursorOverlay.destroy();
@@ -1731,7 +2577,16 @@ export class FrameRenderer {
 		this.shadowCtx = null;
 		this.compositeCanvas = null;
 		this.compositeCtx = null;
+		this.temporalAccumulationCanvas = null;
+		this.temporalAccumulationCtx = null;
 		this.backgroundCtx = null;
+		this.closeBackgroundDecodedFrame();
+		this.backgroundForwardFrameSource?.cancel();
+		void this.backgroundForwardFrameSource?.destroy();
+		this.backgroundForwardFrameSource = null;
+		this.backgroundForwardFrameSourceUrl = null;
+		this.backgroundForwardFrameDurationSec = null;
+		this.lastSyncedBackgroundLoopTimeSec = null;
 		if (this.backgroundVideoElement) {
 			this.backgroundVideoElement.pause();
 			this.backgroundVideoElement.src = "";

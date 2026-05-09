@@ -5,7 +5,7 @@ import { ALLOW_RECORDLY_WINDOW_CAPTURE } from "../constants";
 import { selectedSource, setSelectedSource } from "../state";
 import type { SelectedSource } from "../types";
 import { getScreen, parseWindowId } from "../utils";
-import { getDisplayBoundsForSource } from "../recording/ffmpeg";
+import { getDisplayBoundsForSource, getDisplayWorkAreaForSource } from "../recording/ffmpeg";
 import {
 	getNativeMacWindowSources,
 	resolveMacWindowBounds,
@@ -15,23 +15,17 @@ import {
 } from "../cursor/bounds";
 
 const execFileAsync = promisify(execFile);
+const SOURCE_LIST_CACHE_TTL_MS = 1200;
+let sourceListCache:
+	| {
+			key: string;
+			expiresAt: number;
+			value: Array<Record<string, unknown>>;
+	  }
+	| null = null;
 
 function normalizeDesktopSourceName(value: string) {
 	return value.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function hasUsableSourceThumbnail(
-	thumbnail:
-		| {
-				isEmpty: () => boolean;
-				getSize: () => { width: number; height: number };
-		  }
-		| null
-		| undefined,
-) {
-	if (!thumbnail || thumbnail.isEmpty()) return false;
-	const size = thumbnail.getSize();
-	return size.width > 1 && size.height > 1;
 }
 
 function broadcastSelectedSourceChange() {
@@ -52,8 +46,18 @@ export function registerSourceHandlers({
 	getSourceSelectorWindow: () => BrowserWindow | null;
 }) {
 	ipcMain.handle("get-sources", async (_, opts) => {
+		const cacheKey = JSON.stringify({
+			types: opts?.types,
+			thumbnailSize: opts?.thumbnailSize,
+			fetchWindowIcons: opts?.fetchWindowIcons,
+		});
+		if (sourceListCache && sourceListCache.key === cacheKey && sourceListCache.expiresAt > Date.now()) {
+			return sourceListCache.value;
+		}
+
 		const includeScreens = Array.isArray(opts?.types) ? opts.types.includes("screen") : true;
 		const includeWindows = Array.isArray(opts?.types) ? opts.types.includes("window") : true;
+		const includeWindowIcons = Boolean(opts?.fetchWindowIcons);
 		const electronTypes = [
 			...(includeScreens ? ["screen" as const] : []),
 			...(includeWindows ? ["window" as const] : []),
@@ -125,7 +129,7 @@ export function registerSourceHandlers({
 				originalName: matchedSource?.name ?? displayName,
 				display_id: displayId,
 				thumbnail: matchedSource?.thumbnail ? matchedSource.thumbnail.toDataURL() : null,
-				appIcon: matchedSource?.appIcon ? matchedSource.appIcon.toDataURL() : null,
+				appIcon: null,
 				sourceType: "screen" as const,
 			};
 		});
@@ -133,7 +137,6 @@ export function registerSourceHandlers({
 		if (process.platform !== "darwin" || !includeWindows) {
 			const windowSources = electronSources
 				.filter((source) => source.id.startsWith("window:"))
-				.filter((source) => hasUsableSourceThumbnail(source.thumbnail))
 				.filter((source) => {
 					const normalizedName = normalizeDesktopSourceName(source.name);
 					if (!normalizedName) {
@@ -159,11 +162,17 @@ export function registerSourceHandlers({
 					originalName: source.name,
 					display_id: source.display_id,
 					thumbnail: source.thumbnail ? source.thumbnail.toDataURL() : null,
-					appIcon: source.appIcon ? source.appIcon.toDataURL() : null,
+					appIcon:
+						includeWindowIcons && source.appIcon ? source.appIcon.toDataURL() : null,
 					sourceType: "window" as const,
 				}));
-
-			return [...screenSources, ...windowSources];
+			const result = [...screenSources, ...windowSources];
+			sourceListCache = {
+				key: cacheKey,
+				expiresAt: Date.now() + SOURCE_LIST_CACHE_TTL_MS,
+				value: result,
+			};
+			return result;
 		}
 
 		try {
@@ -221,17 +230,25 @@ export function registerSourceHandlers({
 							? electronWindowSource.thumbnail.toDataURL()
 							: null,
 						appIcon:
-							source.appIcon ??
-							(electronWindowSource?.appIcon
-								? electronWindowSource.appIcon.toDataURL()
-								: null),
+							includeWindowIcons
+								? (source.appIcon ??
+									(electronWindowSource?.appIcon
+										? electronWindowSource.appIcon.toDataURL()
+										: null))
+								: null,
 						appName: source.appName,
 						windowTitle: source.windowTitle,
 						sourceType: "window" as const,
 					};
 				});
 
-			return [...screenSources, ...mergedWindowSources];
+			const result = [...screenSources, ...mergedWindowSources];
+			sourceListCache = {
+				key: cacheKey,
+				expiresAt: Date.now() + SOURCE_LIST_CACHE_TTL_MS,
+				value: result,
+			};
+			return result;
 		} catch (error) {
 			console.warn("Falling back to Electron window enumeration on macOS:", error);
 
@@ -266,11 +283,18 @@ export function registerSourceHandlers({
 					originalName: source.name,
 					display_id: source.display_id,
 					thumbnail: source.thumbnail ? source.thumbnail.toDataURL() : null,
-					appIcon: source.appIcon ? source.appIcon.toDataURL() : null,
+					appIcon:
+						includeWindowIcons && source.appIcon ? source.appIcon.toDataURL() : null,
 					sourceType: "window" as const,
 				}));
 
-			return [...screenSources, ...windowSources];
+			const result = [...screenSources, ...windowSources];
+			sourceListCache = {
+				key: cacheKey,
+				expiresAt: Date.now() + SOURCE_LIST_CACHE_TTL_MS,
+				value: result,
+			};
+			return result;
 		}
 	});
 
@@ -337,7 +361,10 @@ export function registerSourceHandlers({
 			let bounds: { x: number; y: number; width: number; height: number } | null = null;
 
 			if (source.id?.startsWith("screen:")) {
-				bounds = getDisplayBoundsForSource(source);
+				bounds =
+					process.platform === "darwin"
+						? getDisplayWorkAreaForSource(source)
+						: getDisplayBoundsForSource(source);
 			} else if (isWindow) {
 				if (process.platform === "darwin") {
 					bounds = await resolveMacWindowBounds(source);
@@ -363,7 +390,12 @@ export function registerSourceHandlers({
 			const resolvedBounds = bounds;
 
 			// ── 3. Show traveling wave highlight ──
-			const pad = 6;
+			// On macOS, screen highlights use workArea and no outward padding —
+			// macOS clamps window positions below the menu bar so outward
+			// padding only works on the left/top while right/bottom run off-screen.
+			const isScreen = source.id?.startsWith("screen:");
+			const isMacScreen = isScreen && process.platform === "darwin";
+			const pad = isMacScreen ? 0 : 6;
 			const highlightWin = new BrowserWindow({
 				x: resolvedBounds.x - pad,
 				y: resolvedBounds.y - pad,
@@ -381,13 +413,18 @@ export function registerSourceHandlers({
 
 			highlightWin.setIgnoreMouseEvents(true);
 
+			const borderRadius = isMacScreen ? 0 : 10;
+			const glowInset = isMacScreen ? 0 : -4;
+			const glowRadius = isMacScreen ? 0 : 14;
+			const glowPad = isMacScreen ? 3 : 6;
+
 			const html = `<!DOCTYPE html>
 <html><head><style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 
 .border-wrap{
-  position:fixed;inset:0;border-radius:10px;padding:3px;
+  position:fixed;inset:0;border-radius:${borderRadius}px;padding:3px;
   background:conic-gradient(from var(--angle,0deg),
     transparent 0%,
     transparent 60%,
@@ -405,7 +442,7 @@ body{background:transparent;overflow:hidden;width:100vw;height:100vh}
 }
 
 .glow-wrap{
-  position:fixed;inset:-4px;border-radius:14px;padding:6px;
+  position:fixed;inset:${glowInset}px;border-radius:${glowRadius}px;padding:${glowPad}px;
   background:conic-gradient(from var(--angle,0deg),
     transparent 0%,
     transparent 65%,

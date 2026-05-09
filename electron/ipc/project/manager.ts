@@ -1,34 +1,34 @@
-import { constants as fsConstants } from "node:fs";
-import { existsSync } from "node:fs";
+import { existsSync, constants as fsConstants, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { app } from "electron";
 import { RECORDINGS_DIR, USER_DATA_PATH } from "../../appPaths";
+import { isSupportedLocalMediaPath } from "../../mediaTypes";
 import {
-	PROJECT_FILE_EXTENSION,
 	LEGACY_PROJECT_FILE_EXTENSIONS,
-	PROJECTS_DIRECTORY_NAME,
-	PROJECT_THUMBNAIL_SUFFIX,
-	RECENT_PROJECTS_FILE,
 	MAX_RECENT_PROJECTS,
+	PROJECT_FILE_EXTENSION,
+	PROJECT_THUMBNAIL_SUFFIX,
+	PROJECTS_DIRECTORY_NAME,
+	RECENT_PROJECTS_FILE,
 	RECORDINGS_SETTINGS_FILE,
 } from "../constants";
-import type { ProjectLibraryEntry, RecordingSessionData } from "../types";
 import {
+	approvedLocalReadPaths,
 	currentProjectPath,
 	setCurrentProjectPath,
-	setCurrentVideoPath,
 	setCurrentRecordingSession,
-	approvedLocalReadPaths,
+	setCurrentVideoPath,
 	setCustomRecordingsDir,
 	setRecordingsDirLoaded,
 } from "../state";
+import type { ProjectLibraryEntry, RecordingSessionData } from "../types";
 import {
+	getRecordingsDir,
 	normalizePath,
 	normalizeVideoSourcePath,
-	getRecordingsDir,
+	parseJsonWithByteOrderMark,
 } from "../utils";
-
 
 export { normalizePath, normalizeVideoSourcePath };
 
@@ -50,21 +50,78 @@ export function isPathInsideDirectory(candidatePath: string, directoryPath: stri
 }
 
 export function isAllowedLocalReadPath(candidatePath: string) {
-	const allowedPrefixes = [RECORDINGS_DIR, USER_DATA_PATH, getAssetRootPath(), app.getPath("temp")];
+	const allowedPrefixes = [
+		RECORDINGS_DIR,
+		USER_DATA_PATH,
+		getAssetRootPath(),
+		app.getPath("temp"),
+	];
 	const normalizedCandidatePath = normalizePath(candidatePath);
 
-	return (
-		existsSync(normalizedCandidatePath) ||
+	// Canonicalize so a symlink placed under an allowed prefix can't smuggle in a
+	// target that lives outside it. realpathSync throws when the path doesn't
+	// exist yet (e.g. a pending export approved before the file is written) — in
+	// that case fall back to the lexical path, which can only succeed via the
+	// approvedLocalReadPaths check below since no symlink target exists yet.
+	let canonicalCandidatePath = normalizedCandidatePath;
+	try {
+		canonicalCandidatePath = normalizePath(realpathSync(normalizedCandidatePath));
+	} catch {
+		// File may not exist yet; keep the lexical path.
+	}
+
+	// Security: only allow paths under app-managed directories or paths the user
+	// has explicitly opted into (recording session sources, files chosen via
+	// dialog, app-produced exports). The lexical path must satisfy the policy
+	// AND the canonical (real) path must satisfy it too, so a symlink under an
+	// allowed prefix that points outside the allowlist is rejected. Previously
+	// this returned true for any existing file, which made the allowlist a no-op
+	// for read-local-file and the local media URL handler.
+	const lexicalAllowed =
 		allowedPrefixes.some((prefix) => isPathInsideDirectory(normalizedCandidatePath, prefix)) ||
-		approvedLocalReadPaths.has(normalizedCandidatePath)
+		approvedLocalReadPaths.has(normalizedCandidatePath);
+	if (!lexicalAllowed) {
+		return false;
+	}
+
+	if (canonicalCandidatePath === normalizedCandidatePath) {
+		return true;
+	}
+
+	return (
+		allowedPrefixes.some((prefix) => isPathInsideDirectory(canonicalCandidatePath, prefix)) ||
+		approvedLocalReadPaths.has(canonicalCandidatePath)
 	);
 }
 
-// Keep media-server access rules aligned with read-local-file so exported videos
-// saved outside the active recording session can still be reopened in the editor.
+// Keep loopback media-server access restricted to allowlisted or explicitly
+// approved files. Direct renderer-side read-local-file calls can be more
+// permissive, but URL-based serving must stay scoped so arbitrary paths do not
+// become fetchable inside the app.
 export async function isAllowedLocalMediaPath(candidatePath: string) {
 	const normalizedCandidatePath = normalizePath(candidatePath);
 	return isAllowedLocalReadPath(normalizedCandidatePath);
+}
+
+async function collectApprovedLocalReadPaths(filePath?: string | null): Promise<string[]> {
+	const normalizedPath = normalizeVideoSourcePath(filePath);
+	if (!normalizedPath) {
+		return [];
+	}
+
+	const approvedPaths = [normalizePath(normalizedPath)];
+
+	try {
+		const realPath = await fs.realpath(approvedPaths[0]);
+		const normalizedRealPath = normalizePath(realPath);
+		if (!approvedPaths.includes(normalizedRealPath)) {
+			approvedPaths.push(normalizedRealPath);
+		}
+	} catch {
+		// Ignore missing files; the eventual read will surface the real error.
+	}
+
+	return approvedPaths;
 }
 
 export async function rememberApprovedLocalReadPath(filePath?: string | null) {
@@ -73,22 +130,56 @@ export async function rememberApprovedLocalReadPath(filePath?: string | null) {
 		return;
 	}
 
-	const resolvedPath = normalizePath(normalizedPath);
-	approvedLocalReadPaths.add(resolvedPath);
-
-	try {
-		approvedLocalReadPaths.add(await fs.realpath(resolvedPath));
-	} catch {
-		// Ignore missing files; the eventual read will surface the real error.
+	const approvedPaths = await collectApprovedLocalReadPaths(normalizedPath);
+	for (const approvedPath of approvedPaths) {
+		approvedLocalReadPaths.add(approvedPath);
 	}
 }
 
-export async function replaceApprovedSessionLocalReadPaths(filePaths: Array<string | null | undefined>) {
-	approvedLocalReadPaths.clear();
-	await Promise.all(filePaths.map((filePath) => rememberApprovedLocalReadPath(filePath)));
+export async function resolveApprovedLocalMediaPath(candidatePath: string): Promise<string | null> {
+	const normalizedCandidatePath = normalizePath(candidatePath);
+	const realPath = await fs.realpath(normalizedCandidatePath).catch(() => null);
+
+	if (!realPath) {
+		return null;
+	}
+
+	const stat = await fs.stat(realPath).catch(() => null);
+	if (!stat?.isFile() || !isSupportedLocalMediaPath(realPath)) {
+		return null;
+	}
+
+	if (!(await isAllowedLocalMediaPath(realPath))) {
+		return null;
+	}
+
+	await rememberApprovedLocalReadPath(candidatePath);
+	return realPath;
 }
 
-export async function resolveProjectMediaSources(project: unknown): Promise<
+export async function replaceApprovedSessionLocalReadPaths(
+	filePaths: Array<string | null | undefined>,
+) {
+	const nextApprovedPaths = new Set<string>();
+	const approvedPathLists = await Promise.all(
+		filePaths.map((filePath) => collectApprovedLocalReadPaths(filePath)),
+	);
+
+	for (const approvedPathList of approvedPathLists) {
+		for (const approvedPath of approvedPathList) {
+			nextApprovedPaths.add(approvedPath);
+		}
+	}
+
+	approvedLocalReadPaths.clear();
+	for (const approvedPath of nextApprovedPaths) {
+		approvedLocalReadPaths.add(approvedPath);
+	}
+}
+
+export async function resolveProjectMediaSources(
+	project: unknown,
+): Promise<
 	| { success: true; videoPath: string; webcamPath: string | null }
 	| { success: false; message: string }
 > {
@@ -174,6 +265,10 @@ export function getProjectThumbnailPath(projectPath: string) {
 
 export async function saveProjectThumbnail(projectPath: string, thumbnailDataUrl?: string | null) {
 	const thumbnailPath = getProjectThumbnailPath(projectPath);
+	if (thumbnailDataUrl === undefined) {
+		return existsSync(thumbnailPath) ? thumbnailPath : null;
+	}
+
 	if (!thumbnailDataUrl) {
 		await fs.rm(thumbnailPath, { force: true }).catch(() => undefined);
 		return null;
@@ -191,7 +286,7 @@ export async function saveProjectThumbnail(projectPath: string, thumbnailDataUrl
 export async function loadRecentProjectPaths() {
 	try {
 		const content = await fs.readFile(RECENT_PROJECTS_FILE, "utf-8");
-		const parsed = JSON.parse(content) as { paths?: unknown };
+		const parsed = parseJsonWithByteOrderMark<{ paths?: unknown }>(content);
 		return Array.isArray(parsed.paths)
 			? parsed.paths.filter(
 					(value): value is string =>
@@ -247,10 +342,15 @@ export async function buildProjectLibraryEntry(
 
 		return {
 			path: normalizedPath,
-			name: path.basename(normalizedPath).replace(
-			new RegExp(`\\.(${[PROJECT_FILE_EXTENSION, ...LEGACY_PROJECT_FILE_EXTENSIONS].join("|")})$`, "i"),
-			"",
-		),
+			name: path
+				.basename(normalizedPath)
+				.replace(
+					new RegExp(
+						`\\.(${[PROJECT_FILE_EXTENSION, ...LEGACY_PROJECT_FILE_EXTENSIONS].join("|")})$`,
+						"i",
+					),
+					"",
+				),
 			updatedAt: stats.mtimeMs,
 			thumbnailPath: thumbnailExists ? thumbnailPath : null,
 			isCurrent: Boolean(
@@ -308,7 +408,7 @@ export async function loadProjectFromPath(projectPath: string) {
 	let project: unknown;
 	try {
 		const content = await fs.readFile(normalizedPath, "utf-8");
-		project = JSON.parse(content);
+		project = parseJsonWithByteOrderMark(content);
 	} catch (error) {
 		return {
 			success: false,
@@ -361,4 +461,3 @@ export function isTrustedProjectPath(filePath?: string | null): boolean {
 	if (!filePath || !currentProjectPath) return false;
 	return normalizePath(filePath) === normalizePath(currentProjectPath);
 }
-
