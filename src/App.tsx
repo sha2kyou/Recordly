@@ -12,6 +12,8 @@ import { loadAllCustomFonts } from "./lib/customFonts";
 export default function App() {
 	const [windowType, setWindowType] = useState("");
 	const { t } = useI18n();
+	const isMacOS = /mac/i.test(navigator.platform);
+	const appIconSrc = "/app-icons/recordly-128.png";
 
 	useEffect(() => {
 		const params = new URLSearchParams(window.location.search);
@@ -66,7 +68,7 @@ export default function App() {
 				<div className="flex h-full w-full items-center justify-center bg-editor-bg text-foreground">
 					<div className="flex items-center gap-4 rounded-2xl border border-foreground/10 bg-foreground/5 px-6 py-5 shadow-2xl shadow-black/30 backdrop-blur-xl">
 						<img
-							src="/app-icons/recordly-128.png"
+							src={appIconSrc}
 							alt={t("app.name", "Recordly")}
 							className="h-12 w-12 rounded-xl"
 						/>

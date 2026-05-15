@@ -38,7 +38,6 @@ const WEBCAM_WIDTH = 1280;
 const WEBCAM_HEIGHT = 720;
 const WEBCAM_FRAME_RATE = 30;
 const WEBCAM_SUFFIX = "-webcam";
-const SOURCE_AUDIO_MUX_TOAST_ID = "recording-audio-mux-warning";
 const MICROPHONE_FALLBACK_ERROR_TOAST_ID = "recording-microphone-fallback-error";
 const MICROPHONE_SIDECAR_ERROR_TOAST_ID = "recording-microphone-sidecar-error";
 export type BrowserMicrophoneProfile =
@@ -636,6 +635,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 	const finalizeRecordingSession = useCallback(
 		async (videoPath: string, webcamPath: string | null) => {
+			const start = performance.now();
+			console.log("[PERF:RENDERER] Finalize Session & Switch to Editor: STARTED");
 			const shouldHideOverlayCursor = hideEditorOverlayCursorByDefault.current;
 			try {
 				if (webcamPath) {
@@ -664,6 +665,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 			setFinalizing(false);
 			await window.electronAPI.switchToEditor();
+			console.log(
+				`[PERF:RENDERER] Finalize Session & Switch to Editor: COMPLETED in ${(performance.now() - start).toFixed(2)}ms`,
+			);
 		},
 		[],
 	);
@@ -879,6 +883,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			const webcamPath = await stopWebcamRecorder();
 			await storeMicrophoneSidecar(resolvedMicFallbackBlobPromise, result.path, startDelayMs);
 			await finalizeRecordingSession(result.path, webcamPath);
+			
+			if (typeof window.electronAPI?.hudOverlayClose === "function") {
+				window.electronAPI.hudOverlayClose();
+			}
+
 			return result.path;
 		},
 		[
@@ -1020,6 +1029,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			setFinalizing(true);
 
 			void (async () => {
+				const stopStart = performance.now();
+				console.log("[PERF:RENDERER] Total Stop Sequence: STARTED");
+
 				const fallbackStartDelayMs = micFallbackStartDelayMs.current;
 				const fallbackTrackSettings = micFallbackTrackSettings.current;
 				const stoppedAtMs = Date.now();
@@ -1030,9 +1042,14 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				const isNativeWindows = nativeWindowsRecording.current;
 				nativeWindowsRecording.current = false;
 
+				const ipcStopStart = performance.now();
+				console.log("[PERF:RENDERER] IPC: stopNativeScreenRecording: STARTED");
 				const result = await window.electronAPI.stopNativeScreenRecording();
+				console.log(
+					`[PERF:RENDERER] IPC: stopNativeScreenRecording: COMPLETED in ${(performance.now() - ipcStopStart).toFixed(2)}ms`,
+				);
+
 				await window.electronAPI?.setRecordingState(false);
-				const webcamPath = await webcamPathPromise;
 
 				if (!result.success || !result.path) {
 					console.error(
@@ -1046,6 +1063,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 							fallbackStartDelayMs,
 						);
 						if (recoveredPath) {
+							console.log(
+								`[PERF:RENDERER] Total Stop Sequence (RECOVERED) in ${(performance.now() - stopStart).toFixed(2)}ms`,
+							);
 							return;
 						}
 					} catch (recoveryError) {
@@ -1062,36 +1082,58 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					return;
 				}
 
-				let finalPath = result.path;
+				const finalPath = result.path;
 
-				if (isNativeWindows) {
-					const muxResult =
-						await window.electronAPI.muxNativeWindowsRecording(expectedDurationMs);
-					if (!muxResult?.success || !muxResult.path) {
-						void logNativeCaptureDiagnostics("mux-native-windows-recording");
-						const fallbackPath = muxResult?.path ?? finalPath;
-						const warningMessage =
-							muxResult?.error ||
-							muxResult?.message ||
-							"Failed to finish the native Windows audio mux";
-						toast.warning(
-							`${warningMessage}. Recording was saved, but audio playback or export may be incomplete.`,
-							{ id: SOURCE_AUDIO_MUX_TOAST_ID, duration: 10000 },
-						);
-						finalPath = fallbackPath;
-					} else {
-						finalPath = muxResult.path;
-					}
-				}
+				// 1. Finalize the session and switch to editor immediately (Optimistic UI)
+				// We pass null for webcamPath initially to avoid blocking on webcam disk writes/muxing.
+				await finalizeRecordingSession(finalPath, null);
 
-				await storeMicrophoneSidecar(
-					micFallbackBlobPromise,
-					finalPath,
-					fallbackStartDelayMs,
-					fallbackTrackSettings,
-				);
+						// 2. Perform background finalization (webcam, muxing, sidecars)
+						// We don't await this to keep the UI responsive
+						void (async () => {
+							try {
+								// Await the webcam path in the background
+								const webcamPath = await webcamPathPromise;
+								console.log("[useScreenRecorder] Background native processing: webcamPath is", webcamPath);
 
-				await finalizeRecordingSession(finalPath, webcamPath);
+								// Store sidecars
+								await storeMicrophoneSidecar(
+									micFallbackBlobPromise,
+									finalPath,
+									fallbackStartDelayMs,
+									fallbackTrackSettings,
+								);
+
+								// Perform muxing/renaming if on Windows
+								if (isNativeWindows) {
+									await window.electronAPI.muxNativeWindowsRecording(expectedDurationMs);
+								}
+
+								console.log("[useScreenRecorder] Emitting setCurrentRecordingSession with:", { finalPath, webcamPath });
+
+								// Update the session state to notify the editor that all background assets (webcam, mic, etc.) are now ready.
+								// This broadcasts a 'recording-session-changed' event that the open editor listens to for re-scanning assets.
+								await window.electronAPI.setCurrentRecordingSession({
+									videoPath: finalPath,
+									webcamPath,
+									timeOffsetMs: webcamTimeOffsetMs.current,
+									hideOverlayCursorByDefault: hideEditorOverlayCursorByDefault.current,
+								});
+
+								console.log(
+									`[PERF:RENDERER] Background Stop Sequence: COMPLETED in ${(performance.now() - stopStart).toFixed(2)}ms`,
+								);
+							} catch (bgError) {
+								console.error("Error in background finalization:", bgError);
+							} finally {
+								// After all background tasks are done (webcam, mic sidecars, muxing),
+								// we can safely close the HUD window to release hardware and resources.
+								if (typeof window.electronAPI?.hudOverlayClose === "function") {
+									console.log("[useScreenRecorder] All background tasks finished, closing HUD");
+									window.electronAPI.hudOverlayClose();
+								}
+							}
+						})();
 			})();
 			return;
 		}
@@ -1728,10 +1770,34 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					}
 
 					if (videoResult.path) {
-						const webcamPath = pendingWebcamPathPromise.current
-							? await pendingWebcamPathPromise.current
-							: resolvedWebcamPath.current;
-						await finalizeRecordingSession(videoResult.path, webcamPath);
+						const finalVideoPath = videoResult.path;
+						// 1. Launch editor immediately (Optimistic UI)
+						await finalizeRecordingSession(finalVideoPath, null);
+
+						// 2. Background webcam processing
+						void (async () => {
+							const webcamPath = pendingWebcamPathPromise.current
+								? await pendingWebcamPathPromise.current
+								: resolvedWebcamPath.current;
+
+							try {
+								if (webcamPath) {
+									await window.electronAPI.setCurrentRecordingSession({
+										videoPath: finalVideoPath,
+										webcamPath,
+										timeOffsetMs: webcamTimeOffsetMs.current,
+										hideOverlayCursorByDefault: hideEditorOverlayCursorByDefault.current,
+									});
+								}
+							} finally {
+								// After all background tasks are done (webcam),
+								// we can safely close the HUD window to release hardware and resources.
+								if (typeof window.electronAPI?.hudOverlayClose === "function") {
+									console.log("[useScreenRecorder:browser] All background tasks finished, closing HUD");
+									window.electronAPI.hudOverlayClose();
+								}
+							}
+						})();
 					} else {
 						await notifyRecordingFinalizationFailure("Failed to save the recording.");
 					}
@@ -1797,7 +1863,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				markRecordingPaused(boundaryMs);
 				setPaused(true);
 				try {
-					await window.electronAPI.pauseCursorCapture();
+					await window.electronAPI.pauseCursorCapture(boundaryMs);
 				} catch (error) {
 					console.warn("Failed to pause cursor capture:", error);
 				}
@@ -1814,7 +1880,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				markRecordingPaused(boundaryMs);
 				setPaused(true);
 				try {
-					await window.electronAPI.pauseCursorCapture();
+					await window.electronAPI.pauseCursorCapture(boundaryMs);
 				} catch (error) {
 					console.warn("Failed to pause cursor capture:", error);
 				}
@@ -1843,7 +1909,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				markRecordingResumed(boundaryMs);
 				setPaused(false);
 				try {
-					await window.electronAPI.resumeCursorCapture();
+					await window.electronAPI.resumeCursorCapture(boundaryMs);
 				} catch (error) {
 					console.warn("Failed to resume cursor capture:", error);
 				}
@@ -1860,7 +1926,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				markRecordingResumed(boundaryMs);
 				setPaused(false);
 				try {
-					await window.electronAPI.resumeCursorCapture();
+					await window.electronAPI.resumeCursorCapture(boundaryMs);
 				} catch (error) {
 					console.warn("Failed to resume cursor capture:", error);
 				}
