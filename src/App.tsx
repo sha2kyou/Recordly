@@ -12,7 +12,6 @@ import { loadAllCustomFonts } from "./lib/customFonts";
 export default function App() {
 	const [windowType, setWindowType] = useState("");
 	const { t } = useI18n();
-	const isMacOS = /mac/i.test(navigator.platform);
 	const appIconSrc = "/app-icons/recordly-128.png";
 
 	useEffect(() => {

@@ -23,14 +23,7 @@ const POPOVER_ID = "more";
 
 const LOCALE_LABELS: Record<string, string> = {
 	en: "English",
-	es: "Español",
-	fr: "Français",
-	it: "Italiano",
-	nl: "Nederlands",
-	ko: "한국어",
-	"pt-BR": "Português",
 	"zh-CN": "简体中文",
-	"zh-TW": "繁體中文",
 };
 
 export function MorePopover({

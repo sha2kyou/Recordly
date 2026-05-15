@@ -518,6 +518,20 @@ export function getHudOverlayWindow(): BrowserWindow | null {
 	return hudOverlayWindow && !hudOverlayWindow.isDestroyed() ? hudOverlayWindow : null;
 }
 
+export function reassertHudOverlayMousePassthrough(): void {
+	const hudWindow = getHudOverlayWindow();
+	if (!hudWindow || !isHudOverlayMousePassthroughSupported()) {
+		return;
+	}
+
+	hudWindow.setIgnoreMouseEvents(false);
+	setTimeout(() => {
+		if (!hudWindow.isDestroyed()) {
+			hudWindow.setIgnoreMouseEvents(true, { forward: true });
+		}
+	}, 50);
+}
+
 function loadPackagedEditorWindow(win: BrowserWindow) {
 	const query = getEditorWindowQuery();
 	const queryString = new URLSearchParams(query).toString();
