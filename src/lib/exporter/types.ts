@@ -8,6 +8,7 @@ export interface ExportConfig {
 	backendPreference?: ExportBackendPreference;
 	preferredRenderBackend?: ExportRenderBackend;
 	experimentalNativeExport?: boolean;
+	experimentalNvidiaCudaExport?: boolean;
 	maxEncodeQueue?: number;
 	maxDecodeQueue?: number;
 	maxPendingFrames?: number;
@@ -192,6 +193,7 @@ export interface GifExportConfig {
 
 export interface ExportSettings {
 	format: ExportFormat;
+	includeCaptionSidecar?: boolean;
 	// MP4 settings
 	quality?: ExportQuality;
 	encodingMode?: ExportEncodingMode;

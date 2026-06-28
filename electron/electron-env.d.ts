@@ -43,27 +43,6 @@ interface NativeCaptureDiagnostics {
 	error?: string;
 }
 
-interface UpdateToastState {
-	version: string;
-	detail: string;
-	phase: "available" | "downloading" | "ready" | "error";
-	delayMs: number;
-	isPreview?: boolean;
-	progressPercent?: number;
-	transferredBytes?: number;
-	totalBytes?: number;
-	remainingBytes?: number;
-	bytesPerSecond?: number;
-	primaryAction?: "install-and-restart" | "retry-check";
-}
-
-interface UpdateStatusSummary {
-	status: "idle" | "checking" | "up-to-date" | "available" | "downloading" | "ready" | "error";
-	currentVersion: string;
-	availableVersion: string | null;
-	detail?: string;
-}
-
 type RendererExtensionInfo = import("./extensions/extensionTypes").ExtensionInfo;
 type RendererExtensionReview = import("./extensions/extensionTypes").ExtensionReview;
 type RendererMarketplaceExtension = import("./extensions/extensionTypes").MarketplaceExtension;
@@ -188,9 +167,23 @@ interface RendererNativeVideoMetadataProbe {
 	audioSampleRate?: number;
 }
 
+interface RendererNativeExportCapabilities {
+	platform: NodeJS.Platform;
+	nvidiaCuda: {
+		available: boolean;
+		skipReason: string | null;
+		hasNvidiaGpu: boolean | null;
+		hasWrapper: boolean;
+		explicitEnabled: boolean;
+		explicitDisabled: boolean;
+		userOptInRequired: boolean;
+	};
+}
+
 interface Window {
 	electronAPI: {
 		hudOverlaySetIgnoreMouse: (ignore: boolean) => void;
+		hudOverlaySetSourceSelectionActive: (active: boolean) => void;
 		hudOverlayDrag: (phase: "start" | "move" | "end", screenX: number, screenY: number) => void;
 		hudOverlayHide: () => void;
 		hudOverlayClose: () => void;
@@ -332,6 +325,11 @@ interface Window {
 			metadata?: RendererNativeVideoMetadataProbe;
 			error?: string;
 		}>;
+		getNativeExportCapabilities: () => Promise<{
+			success: boolean;
+			capabilities?: RendererNativeExportCapabilities;
+			error?: string;
+		}>;
 		nativeStaticLayoutExport: (options: {
 			sessionId?: string;
 			inputPath: string;
@@ -392,6 +390,7 @@ interface Window {
 			}>;
 			chunkDurationSec?: number;
 			experimentalWindowsGpuCompositor?: boolean;
+			experimentalNvidiaCudaExport?: boolean;
 			audioOptions?: {
 				audioMode?: "none" | "copy-source" | "trim-source" | "edited-track";
 				audioSourcePath?: string | null;
@@ -526,6 +525,14 @@ interface Window {
 			tempPath: string;
 			fileName: string;
 			outputPath?: string | null;
+			captionSidecar?: {
+				format: "srt" | "vtt" | "both";
+				cues: Array<{
+					startMs: number;
+					endMs: number;
+					text: string;
+				}>;
+			};
 		}) => Promise<{
 			success: boolean;
 			path?: string;
@@ -603,10 +610,26 @@ interface Window {
 		saveExportedVideo: (
 			videoData: ArrayBuffer,
 			fileName: string,
+			captionSidecar?: {
+				format: "srt" | "vtt" | "both";
+				cues: Array<{
+					startMs: number;
+					endMs: number;
+					text: string;
+				}>;
+			},
 		) => Promise<{ success: boolean; path?: string; message?: string; canceled?: boolean }>;
 		writeExportedVideoToPath: (
 			videoData: ArrayBuffer,
 			outputPath: string,
+			captionSidecar?: {
+				format: "srt" | "vtt" | "both";
+				cues: Array<{
+					startMs: number;
+					endMs: number;
+					text: string;
+				}>;
+			},
 		) => Promise<{
 			success: boolean;
 			path?: string;
@@ -614,7 +637,16 @@ interface Window {
 			error?: string;
 			canceled?: boolean;
 		}>;
-		openVideoFilePicker: () => Promise<{ success: boolean; path?: string; canceled?: boolean }>;
+		openVideoFilePicker: (options?: { includeProjects?: boolean }) => Promise<{
+			success: boolean;
+			kind?: "media" | "project";
+			path?: string;
+			project?: unknown;
+			extension?: string;
+			message?: string;
+			canceled?: boolean;
+			error?: string;
+		}>;
 		openAudioFilePicker: () => Promise<{ success: boolean; path?: string; canceled?: boolean }>;
 		openWhisperExecutablePicker: () => Promise<{
 			success: boolean;
@@ -708,6 +740,7 @@ interface Window {
 			projectData: unknown,
 			projectName: string,
 			thumbnailDataUrl?: string | null,
+			mode?: "rename" | "copy",
 		) => Promise<{
 			success: boolean;
 			path?: string;
@@ -764,31 +797,6 @@ interface Window {
 			message?: string;
 			error?: string;
 		}>;
-		installDownloadedUpdate: () => Promise<{ success: boolean }>;
-		downloadAvailableUpdate: (
-			installAfterDownload?: boolean,
-		) => Promise<{ success: boolean; message?: string }>;
-		deferDownloadedUpdate: (delayMs?: number) => Promise<{
-			success: boolean;
-			message?: string;
-		}>;
-		dismissUpdateToast: () => Promise<{ success: boolean }>;
-		skipUpdateVersion: () => Promise<{ success: boolean; message?: string }>;
-		getCurrentUpdateToastPayload: () => Promise<UpdateToastState | null>;
-		getUpdateStatusSummary: () => Promise<UpdateStatusSummary>;
-		previewUpdateToast: () => Promise<{ success: boolean }>;
-		checkForAppUpdates: () => Promise<{ success: boolean; logPath: string }>;
-		onUpdateToastStateChanged: (
-			callback: (payload: UpdateToastState | null) => void,
-		) => () => void;
-		onUpdateReadyToast: (
-			callback: (payload: {
-				version: string;
-				detail: string;
-				delayMs: number;
-				isPreview?: boolean;
-			}) => void,
-		) => () => void;
 		onMenuLoadProject: (callback: () => void) => () => void;
 		onMenuSaveProject: (callback: () => void) => () => void;
 		onMenuSaveProjectAs: (callback: () => void) => () => void;
@@ -814,6 +822,8 @@ interface Window {
 		}>;
 		getShortcuts: () => Promise<Record<string, unknown> | null>;
 		saveShortcuts: (shortcuts: unknown) => Promise<{ success: boolean; error?: string }>;
+		getAppSetting: (key: string) => unknown;
+		setAppSetting: (key: string, value: unknown) => boolean;
 		setHasUnsavedChanges: (hasChanges: boolean) => void;
 		onRequestSaveBeforeClose: (callback: () => Promise<boolean>) => () => void;
 		isNativeWindowsCaptureAvailable: () => Promise<{ available: boolean }>;

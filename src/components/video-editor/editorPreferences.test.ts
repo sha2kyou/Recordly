@@ -10,7 +10,7 @@ import {
 	saveEditorPreferences,
 	saveEditorPresets,
 } from "./editorPreferences";
-import { DEFAULT_AUTO_CAPTION_SETTINGS } from "./types";
+import { DEFAULT_AUTO_CAPTION_SETTINGS, DEFAULT_CROP_REGION } from "./types";
 
 function createStorageMock(initialValues: Record<string, string> = {}): Storage {
 	const store = new Map(Object.entries(initialValues));
@@ -37,9 +37,27 @@ function createStorageMock(initialValues: Record<string, string> = {}): Storage 
 	};
 }
 
+function stubElectronSettings(initialValues: Record<string, unknown> = {}) {
+	const store = new Map(Object.entries(initialValues));
+
+	Object.defineProperty(globalThis, "electronAPI", {
+		configurable: true,
+		value: {
+			getAppSetting: (key: string) => (store.has(key) ? store.get(key) : null),
+			setAppSetting: (key: string, value: unknown) => {
+				store.set(key, value);
+				return true;
+			},
+		} as Pick<Window["electronAPI"], "getAppSetting" | "setAppSetting">,
+	});
+
+	return store;
+}
+
 describe("editorPreferences", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		Reflect.deleteProperty(globalThis, "electronAPI");
 	});
 
 	it("normalizes invalid values back to safe defaults", () => {
@@ -69,10 +87,10 @@ describe("editorPreferences", () => {
 		expect(DEFAULT_EDITOR_PREFERENCES.exportQuality).toBe("source");
 	});
 
-	it("defaults cursor preferences to macOS at 2.5x with lighter sway", () => {
-		expect(DEFAULT_EDITOR_PREFERENCES.cursorStyle).toBe("macos");
+	it("defaults cursor preferences to Tahoe at 2.5x with gentler sway", () => {
+		expect(DEFAULT_EDITOR_PREFERENCES.cursorStyle).toBe("tahoe");
 		expect(DEFAULT_EDITOR_PREFERENCES.cursorSize).toBe(2.5);
-		expect(DEFAULT_EDITOR_PREFERENCES.cursorSway).toBe(0.25);
+		expect(DEFAULT_EDITOR_PREFERENCES.cursorSway).toBe(0.4);
 	});
 
 	it("defaults MP4 exports to the Lightning pipeline", () => {
@@ -108,7 +126,9 @@ describe("editorPreferences", () => {
 
 		const loaded = loadEditorPreferences();
 
-		expect(loaded.zoomMotionBlurTuning).toEqual(DEFAULT_EDITOR_PREFERENCES.zoomMotionBlurTuning);
+		expect(loaded.zoomMotionBlurTuning).toEqual(
+			DEFAULT_EDITOR_PREFERENCES.zoomMotionBlurTuning,
+		);
 	});
 
 	it("does not save dev-only split blur tuning overrides to editor preferences", () => {
@@ -309,6 +329,24 @@ describe("editorPreferences", () => {
 		});
 	});
 
+	it("loads editor preferences from Electron app settings when available", () => {
+		stubElectronSettings({
+			[EDITOR_PREFERENCES_STORAGE_KEY]: {
+				wallpaper: "#0f172a",
+				showCursor: false,
+				customAspectWidth: "3",
+				customAspectHeight: "2",
+			},
+		});
+
+		expect(loadEditorPreferences()).toMatchObject({
+			wallpaper: "#0f172a",
+			showCursor: false,
+			customAspectWidth: "3",
+			customAspectHeight: "2",
+		});
+	});
+
 	it("saves editor presets and reports success", () => {
 		const localStorage = createStorageMock();
 		vi.stubGlobal("localStorage", localStorage);
@@ -322,6 +360,7 @@ describe("editorPreferences", () => {
 					updatedAt: "2026-05-01T00:00:00.000Z",
 					snapshot: {
 						...DEFAULT_EDITOR_PREFERENCES,
+						cropRegion: DEFAULT_CROP_REGION,
 						autoCaptionSettings: DEFAULT_AUTO_CAPTION_SETTINGS,
 					},
 				},
@@ -335,6 +374,93 @@ describe("editorPreferences", () => {
 				name: "Demo Preset",
 			},
 		]);
+	});
+
+	it("saves editor presets to Electron app settings when available", () => {
+		const settingsStore = stubElectronSettings();
+
+		expect(
+			saveEditorPresets([
+				{
+					id: "preset-1",
+					name: "Demo Preset",
+					createdAt: "2026-05-01T00:00:00.000Z",
+					updatedAt: "2026-05-02T00:00:00.000Z",
+					snapshot: {
+						...DEFAULT_EDITOR_PREFERENCES,
+						cropRegion: DEFAULT_CROP_REGION,
+						autoCaptionSettings: DEFAULT_AUTO_CAPTION_SETTINGS,
+					},
+				},
+			]),
+		).toBe(true);
+
+		expect(settingsStore.get(EDITOR_PRESETS_STORAGE_KEY)).toMatchObject([
+			{
+				id: "preset-1",
+				name: "Demo Preset",
+			},
+		]);
+	});
+
+	it("does not let localStorage failures mask Electron preset persistence", () => {
+		const settingsStore = stubElectronSettings();
+		const localStorage = createStorageMock();
+		localStorage.setItem = () => {
+			throw new Error("localStorage unavailable");
+		};
+		vi.stubGlobal("localStorage", localStorage);
+
+		expect(
+			saveEditorPresets([
+				{
+					id: "preset-1",
+					name: "Demo Preset",
+					createdAt: "2026-05-01T00:00:00.000Z",
+					updatedAt: "2026-05-02T00:00:00.000Z",
+					snapshot: {
+						...DEFAULT_EDITOR_PREFERENCES,
+						cropRegion: DEFAULT_CROP_REGION,
+						autoCaptionSettings: DEFAULT_AUTO_CAPTION_SETTINGS,
+					},
+				},
+			]),
+		).toBe(true);
+
+		expect(settingsStore.get(EDITOR_PRESETS_STORAGE_KEY)).toMatchObject([
+			{
+				id: "preset-1",
+				name: "Demo Preset",
+			},
+		]);
+	});
+
+	it("preserves crop region in editor preset snapshots", () => {
+		const localStorage = createStorageMock();
+		vi.stubGlobal("localStorage", localStorage);
+
+		expect(
+			saveEditorPresets([
+				{
+					id: "preset-1",
+					name: "Cropped Demo",
+					createdAt: "2026-05-01T00:00:00.000Z",
+					updatedAt: "2026-05-01T00:00:00.000Z",
+					snapshot: {
+						...DEFAULT_EDITOR_PREFERENCES,
+						cropRegion: { x: 0.08, y: 0.12, width: 0.8, height: 0.7 },
+						autoCaptionSettings: DEFAULT_AUTO_CAPTION_SETTINGS,
+					},
+				},
+			]),
+		).toBe(true);
+
+		expect(loadEditorPresets()[0]?.snapshot.cropRegion).toEqual({
+			x: 0.08,
+			y: 0.12,
+			width: 0.8,
+			height: 0.7,
+		});
 	});
 
 	it("returns false when preset persistence fails", () => {

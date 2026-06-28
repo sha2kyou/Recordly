@@ -16,6 +16,7 @@ import type {
 	AutoCaptionSettings,
 	CaptionCue,
 	CropRegion,
+	CursorClickEffectStyle,
 	CursorStyle,
 	CursorTelemetryPoint,
 	Padding,
@@ -38,7 +39,10 @@ import {
 	PixiCursorOverlay,
 	preloadCursorAssets,
 } from "@/components/video-editor/videoPlayback/cursorRenderer";
-import { computePaddedLayout } from "@/components/video-editor/videoPlayback/layoutUtils";
+import {
+	computePaddedLayout,
+	scalePreviewBorderRadius,
+} from "@/components/video-editor/videoPlayback/layoutUtils";
 import {
 	createSpringState,
 	getZoomSpringConfig,
@@ -50,15 +54,15 @@ import { getWebcamMediaTargetTimeSeconds } from "@/components/video-editor/video
 import { findDominantRegion } from "@/components/video-editor/videoPlayback/zoomRegionUtils";
 import {
 	applyZoomTransform,
-	computeFocusFromTransform,
 	computeZoomTransform,
 	createMotionBlurState,
 	type MotionBlurState,
 } from "@/components/video-editor/videoPlayback/zoomTransform";
 import {
+	getCropMatchedWebcamHeightPercent,
 	getWebcamCropSourceRect,
+	getWebcamOverlayDimensionsPx,
 	getWebcamOverlayPosition,
-	getWebcamOverlaySizePx,
 	isWebcamCropRegionDefault,
 } from "@/components/video-editor/webcamOverlay";
 import { getAssetPath, getExportableVideoUrl, getRenderableAssetUrl } from "@/lib/assetPath";
@@ -146,6 +150,11 @@ interface FrameRenderConfig {
 	cameraSpringDampingMultiplier?: number;
 	cameraSpringMassMultiplier?: number;
 	cursorMotionBlur?: number;
+	cursorClickEffect?: CursorClickEffectStyle;
+	cursorClickEffectColor?: string;
+	cursorClickEffectScale?: number;
+	cursorClickEffectOpacity?: number;
+	cursorClickEffectDurationMs?: number;
 	cursorClickBounce?: number;
 	cursorClickBounceDuration?: number;
 	cursorSway?: number;
@@ -205,7 +214,8 @@ interface WebcamRenderSource {
 interface WebcamLayoutCache {
 	sourceWidth: number;
 	sourceHeight: number;
-	size: number;
+	width: number;
+	height: number;
 	positionX: number;
 	positionY: number;
 	radius: number;
@@ -450,9 +460,15 @@ export class FrameRenderer {
 	private captionRenderKey: string | null = null;
 	private frameSprite: Sprite | null = null;
 	private frameImage: HTMLImageElement | null = null;
-	private frameDraw: ((ctx: CanvasRenderingContext2D, width: number, height: number) => void) | null =
-		null;
-	private frameInsets: { top: number; right: number; bottom: number; left: number } | null = null;
+	private frameDraw:
+		| ((ctx: CanvasRenderingContext2D, width: number, height: number) => void)
+		| null = null;
+	private frameInsets: {
+		top: number;
+		right: number;
+		bottom: number;
+		left: number;
+	} | null = null;
 	private frameRasterCanvas: HTMLCanvasElement | null = null;
 	private frameRasterWidth = 0;
 	private frameRasterHeight = 0;
@@ -471,7 +487,6 @@ export class FrameRenderer {
 	private currentVideoTime = 0;
 	private cursorOverlay: PixiCursorOverlay | null = null;
 	private lastSyncedWebcamTime: number | null = null;
-	private lastWebcamCacheRefreshTime: number | null = null;
 	private webcamRenderMode: "hidden" | "live" | "cached" = "hidden";
 	private webcamLayoutCache: WebcamLayoutCache | null = null;
 	private videoTextureUsesStartupStaging = false;
@@ -534,7 +549,9 @@ export class FrameRenderer {
 		canvas.height = this.config.height;
 
 		try {
-			const exportCanvas = canvas as HTMLCanvasElement & { colorSpace?: string };
+			const exportCanvas = canvas as HTMLCanvasElement & {
+				colorSpace?: string;
+			};
 			if ("colorSpace" in exportCanvas) {
 				exportCanvas.colorSpace = "srgb";
 			}
@@ -586,7 +603,7 @@ export class FrameRenderer {
 		this.webcamRootContainer.visible = false;
 
 		this.overlayContainer.addChild(this.webcamRootContainer);
-		this.overlayContainer.addChild(this.annotationContainer);
+		this.cameraContainer.addChild(this.annotationContainer);
 		this.overlayContainer.addChild(this.captionContainer);
 
 		this.videoMaskGraphics = new Graphics();
@@ -609,6 +626,17 @@ export class FrameRenderer {
 					massMultiplier: this.config.cursorSpringMassMultiplier,
 				},
 				motionBlur: this.config.cursorMotionBlur ?? 0,
+				clickEffect: this.config.cursorClickEffect ?? DEFAULT_CURSOR_CONFIG.clickEffect,
+				clickEffectColor:
+					this.config.cursorClickEffectColor ?? DEFAULT_CURSOR_CONFIG.clickEffectColor,
+				clickEffectScale:
+					this.config.cursorClickEffectScale ?? DEFAULT_CURSOR_CONFIG.clickEffectScale,
+				clickEffectOpacity:
+					this.config.cursorClickEffectOpacity ??
+					DEFAULT_CURSOR_CONFIG.clickEffectOpacity,
+				clickEffectDurationMs:
+					this.config.cursorClickEffectDurationMs ??
+					DEFAULT_CURSOR_CONFIG.clickEffectDurationMs,
 				clickBounce: this.config.cursorClickBounce ?? DEFAULT_CURSOR_CONFIG.clickBounce,
 				clickBounceDuration:
 					this.config.cursorClickBounceDuration ??
@@ -628,7 +656,10 @@ export class FrameRenderer {
 		this.setupCaptionResources();
 
 		if (this.shouldUseZoomMotionBlur()) {
-			this.zoomBlurFilter = new ZoomBlurFilter({ strength: 0, maxKernelSize: 13 });
+			this.zoomBlurFilter = new ZoomBlurFilter({
+				strength: 0,
+				maxKernelSize: 13,
+			});
 			this.motionBlurFilter = new MotionBlurFilter([0, 0], 5, 0);
 		}
 
@@ -732,7 +763,11 @@ export class FrameRenderer {
 
 	private createShadowLayers(
 		parent: Container,
-		configs: ReadonlyArray<{ offsetScale: number; alphaScale: number; blurScale: number }>,
+		configs: ReadonlyArray<{
+			offsetScale: number;
+			alphaScale: number;
+			blurScale: number;
+		}>,
 	): ShadowLayer[] {
 		return configs.map((config) => {
 			const container = new Container();
@@ -1050,6 +1085,13 @@ export class FrameRenderer {
 		fallbackWidth: number,
 		fallbackHeight: number,
 	): CanvasImageSource | VideoFrame {
+		// Keep webcam uploads on the older canvas-staged path. The newer
+		// retained-VideoFrame upload path is fine for the main scene/background,
+		// but it has produced unstable webcam overlays in Lightning exports.
+		if (kind === "webcam") {
+			return this.stageVideoFrameOnCanvas(frame, kind, fallbackWidth, fallbackHeight);
+		}
+
 		if (this.rendererBackend === "webgpu") {
 			return this.resolveRetainedVideoFrameSource(frame, kind, fallbackWidth, fallbackHeight);
 		}
@@ -1429,9 +1471,7 @@ export class FrameRenderer {
 	private calculateAnnotationScaleFactor(): number {
 		const previewWidth = this.config.previewWidth || 1920;
 		const previewHeight = this.config.previewHeight || 1080;
-		const scaleX = this.config.width / previewWidth;
-		const scaleY = this.config.height / previewHeight;
-		return (scaleX + scaleY) / 2;
+		return (this.config.width / previewWidth + this.config.height / previewHeight) / 2;
 	}
 
 	private hasActiveBlurAnnotations(timeMs: number): boolean {
@@ -1523,6 +1563,7 @@ export class FrameRenderer {
 
 	private async composeBlurAnnotationFrame(
 		timeMs: number,
+		sceneTransform?: { scale: number; x: number; y: number },
 		sourceCanvas?: CanvasImageSource,
 	): Promise<void> {
 		if (!this.app) {
@@ -1548,6 +1589,12 @@ export class FrameRenderer {
 			timeMs,
 			this.annotationScaleFactor,
 			this.annotationAssets ?? undefined,
+			sceneTransform ?? {
+				scale: this.animationState.appliedScale,
+				x: this.animationState.x,
+				y: this.animationState.y,
+			},
+			this.layoutCache?.maskRect,
 		);
 
 		this.drawCaptionOverlay(context);
@@ -1571,10 +1618,16 @@ export class FrameRenderer {
 		);
 
 		for (const annotation of annotations) {
-			const x = (annotation.position.x / 100) * this.config.width;
-			const y = (annotation.position.y / 100) * this.config.height;
-			const width = (annotation.size.width / 100) * this.config.width;
-			const height = (annotation.size.height / 100) * this.config.height;
+			const annotationRect = this.layoutCache?.maskRect ?? {
+				x: 0,
+				y: 0,
+				width: this.config.width,
+				height: this.config.height,
+			};
+			const x = annotationRect.x + (annotation.position.x / 100) * annotationRect.width;
+			const y = annotationRect.y + (annotation.position.y / 100) * annotationRect.height;
+			const width = (annotation.size.width / 100) * annotationRect.width;
+			const height = (annotation.size.height / 100) * annotationRect.height;
 
 			if (width <= 0 || height <= 0) {
 				continue;
@@ -2004,8 +2057,12 @@ export class FrameRenderer {
 						}
 					};
 
-					video.addEventListener("seeked", waitForPresentedFrame, { once: true });
-					video.addEventListener("loadeddata", handleMediaReady, { once: true });
+					video.addEventListener("seeked", waitForPresentedFrame, {
+						once: true,
+					});
+					video.addEventListener("loadeddata", handleMediaReady, {
+						once: true,
+					});
 					video.addEventListener("canplay", handleMediaReady, { once: true });
 					video.addEventListener("error", finish, { once: true });
 
@@ -2111,7 +2168,11 @@ export class FrameRenderer {
 		await new Promise<void>((resolve, reject) => {
 			image.onload = () => resolve();
 			image.onerror = () =>
-				reject(new Error(`[ModernFrameRenderer] Failed to load device frame image: ${frameId}`));
+				reject(
+					new Error(
+						`[ModernFrameRenderer] Failed to load device frame image: ${frameId}`,
+					),
+				);
 			image.src = frame.filePath;
 		});
 		this.frameImage = image;
@@ -2337,7 +2398,6 @@ export class FrameRenderer {
 			this.webcamFrameCacheCanvas = null;
 			this.webcamFrameCacheCtx = null;
 			this.lastSyncedWebcamTime = null;
-			this.lastWebcamCacheRefreshTime = null;
 			this.webcamLayoutCache = null;
 			this.webcamRenderMode = "hidden";
 			return;
@@ -2350,7 +2410,6 @@ export class FrameRenderer {
 		this.clearWebcamMediaElement();
 		this.webcamFrameCacheCanvas = null;
 		this.webcamFrameCacheCtx = null;
-		this.lastWebcamCacheRefreshTime = null;
 		this.webcamLayoutCache = null;
 		this.webcamRenderMode = "hidden";
 
@@ -2361,7 +2420,6 @@ export class FrameRenderer {
 			this.webcamVideoElement = null;
 			this.webcamSeekPromise = null;
 			this.lastSyncedWebcamTime = null;
-			this.lastWebcamCacheRefreshTime = null;
 			return;
 		} catch (error) {
 			console.warn(
@@ -2422,31 +2480,6 @@ export class FrameRenderer {
 		this.webcamRenderMode = nextMode;
 	}
 
-	private shouldRefreshWebcamFrameCache(width: number, height: number): boolean {
-		const cropRegion = this.config.webcam?.cropRegion;
-		const sourceRect = getWebcamCropSourceRect(cropRegion, width, height);
-		const targetWidth = Math.max(1, Math.ceil(sourceRect.sw));
-		const targetHeight = Math.max(1, Math.ceil(sourceRect.sh));
-
-		if (
-			!this.webcamFrameCacheCanvas ||
-			this.webcamFrameCacheCanvas.width !== targetWidth ||
-			this.webcamFrameCacheCanvas.height !== targetHeight
-		) {
-			return true;
-		}
-
-		if (!isWebcamCropRegionDefault(cropRegion)) {
-			return true;
-		}
-
-		if (this.lastWebcamCacheRefreshTime === null) {
-			return true;
-		}
-
-		return Math.abs(this.currentVideoTime - this.lastWebcamCacheRefreshTime) >= 0.25;
-	}
-
 	private ensureWebcamFrameCache(width: number, height: number): boolean {
 		const targetWidth = Math.max(1, Math.ceil(width));
 		const targetHeight = Math.max(1, Math.ceil(height));
@@ -2501,7 +2534,6 @@ export class FrameRenderer {
 			this.webcamFrameCacheCanvas.width,
 			this.webcamFrameCacheCanvas.height,
 		);
-		this.lastWebcamCacheRefreshTime = this.currentVideoTime;
 		return true;
 	}
 
@@ -2529,16 +2561,20 @@ export class FrameRenderer {
 		canUseLiveSource: boolean,
 	): WebcamRenderSource | null {
 		if (canUseLiveSource && liveSource && liveSourceWidth > 0 && liveSourceHeight > 0) {
-			if (this.shouldRefreshWebcamFrameCache(liveSourceWidth, liveSourceHeight)) {
+			const usesDefaultCropRegion = isWebcamCropRegionDefault(this.config.webcam?.cropRegion);
+			const needsCacheBackedSource =
+				!usesDefaultCropRegion ||
+				(typeof HTMLVideoElement !== "undefined" && liveSource instanceof HTMLVideoElement);
+
+			if (needsCacheBackedSource) {
 				this.refreshWebcamFrameCache(liveSource, liveSourceWidth, liveSourceHeight);
-			}
-			if (!isWebcamCropRegionDefault(this.config.webcam?.cropRegion)) {
 				const cachedSource = this.getCachedWebcamRenderSource();
 				if (cachedSource) {
 					this.setWebcamRenderMode("live");
 					return cachedSource;
 				}
 			}
+
 			this.setWebcamRenderMode("live");
 			return {
 				source: liveSource,
@@ -2578,7 +2614,8 @@ export class FrameRenderer {
 			previousLayout.mirror === nextLayout.mirror &&
 			areNearlyEqual(previousLayout.sourceWidth, nextLayout.sourceWidth) &&
 			areNearlyEqual(previousLayout.sourceHeight, nextLayout.sourceHeight) &&
-			areNearlyEqual(previousLayout.size, nextLayout.size) &&
+			areNearlyEqual(previousLayout.width, nextLayout.width) &&
+			areNearlyEqual(previousLayout.height, nextLayout.height) &&
 			areNearlyEqual(previousLayout.positionX, nextLayout.positionX) &&
 			areNearlyEqual(previousLayout.positionY, nextLayout.positionY) &&
 			areNearlyEqual(previousLayout.radius, nextLayout.radius) &&
@@ -2597,10 +2634,10 @@ export class FrameRenderer {
 			this.webcamSprite,
 			nextLayout.sourceWidth,
 			nextLayout.sourceHeight,
-			nextLayout.size,
-			nextLayout.size,
-			nextLayout.size / 2,
-			nextLayout.size / 2,
+			nextLayout.width,
+			nextLayout.height,
+			nextLayout.width / 2,
+			nextLayout.height / 2,
 			nextLayout.mirror,
 		);
 
@@ -2608,8 +2645,8 @@ export class FrameRenderer {
 		drawSquircleOnGraphics(this.webcamMaskGraphics, {
 			x: 0,
 			y: 0,
-			width: nextLayout.size,
-			height: nextLayout.size,
+			width: nextLayout.width,
+			height: nextLayout.height,
 			radius: nextLayout.radius,
 		});
 		this.webcamMaskGraphics.fill({ color: 0xffffff });
@@ -2620,30 +2657,35 @@ export class FrameRenderer {
 				continue;
 			}
 
-			const offsetY = nextLayout.size * layer.offsetScale * nextLayout.shadowStrength;
+			const shadowSize = Math.min(nextLayout.width, nextLayout.height);
+			const offsetY = shadowSize * layer.offsetScale * nextLayout.shadowStrength;
 			this.rasterizeShadowLayer(layer, {
 				x: 0,
 				y: 0,
-				width: nextLayout.size,
-				height: nextLayout.size,
+				width: nextLayout.width,
+				height: nextLayout.height,
 				radius: nextLayout.radius,
 				offsetY,
 				alpha: layer.alphaScale * nextLayout.shadowStrength,
-				blur: Math.max(0, nextLayout.size * layer.blurScale * nextLayout.shadowStrength),
+				blur: Math.max(0, shadowSize * layer.blurScale * nextLayout.shadowStrength),
 			});
 		}
 
 		this.webcamLayoutCache = { ...nextLayout };
 	}
 
-	private async syncWebcamFrame(targetTime: number): Promise<void> {
-		const webcamTargetTime = getWebcamMediaTargetTimeSeconds({
+	private getExpectedWebcamTargetTimeSeconds(targetTime: number): number {
+		return getWebcamMediaTargetTimeSeconds({
 			currentTime: targetTime,
 			webcamDuration: Number.isFinite(this.webcamVideoElement?.duration)
 				? this.webcamVideoElement?.duration
 				: null,
 			timeOffsetMs: this.config.webcam?.timeOffsetMs,
 		});
+	}
+
+	private async syncWebcamFrame(targetTime: number): Promise<void> {
+		const webcamTargetTime = this.getExpectedWebcamTargetTimeSeconds(targetTime);
 
 		if (this.webcamForwardFrameSource) {
 			const clampedTime = clampMediaTimeToDuration(webcamTargetTime, null);
@@ -2779,8 +2821,12 @@ export class FrameRenderer {
 				}
 			};
 
-			webcamVideo.addEventListener("seeked", waitForPresentedFrame, { once: true });
-			webcamVideo.addEventListener("loadeddata", handleMediaReady, { once: true });
+			webcamVideo.addEventListener("seeked", waitForPresentedFrame, {
+				once: true,
+			});
+			webcamVideo.addEventListener("loadeddata", handleMediaReady, {
+				once: true,
+			});
 			webcamVideo.addEventListener("canplay", handleMediaReady, { once: true });
 			webcamVideo.addEventListener("error", finish, { once: true });
 
@@ -2811,7 +2857,7 @@ export class FrameRenderer {
 		}
 	}
 
-	private updateWebcamOverlay(): void {
+	private updateWebcamOverlay(referenceTimeSeconds = this.currentVideoTime): void {
 		const webcam = this.config.webcam;
 		if (!webcam?.enabled || !this.webcamRootContainer || !this.webcamMaskGraphics) {
 			if (this.webcamRootContainer) {
@@ -2828,10 +2874,16 @@ export class FrameRenderer {
 			: { width: 0, height: 0 };
 		const activeWebcamVideoElement =
 			webcamSource === this.webcamVideoElement ? this.webcamVideoElement : null;
+		const expectedWebcamTargetTime =
+			this.getExpectedWebcamTargetTimeSeconds(referenceTimeSeconds);
+		const measuredWebcamTime =
+			activeWebcamVideoElement && Number.isFinite(activeWebcamVideoElement.currentTime)
+				? activeWebcamVideoElement.currentTime
+				: this.lastSyncedWebcamTime;
 		const webcamTimeDrift =
-			this.lastSyncedWebcamTime === null
+			measuredWebcamTime === null
 				? 0
-				: Math.abs(this.lastSyncedWebcamTime - this.currentVideoTime);
+				: Math.abs(measuredWebcamTime - expectedWebcamTargetTime);
 		const canUseLiveSource =
 			!!webcamSource &&
 			liveSourceDimensions.width > 0 &&
@@ -2864,10 +2916,27 @@ export class FrameRenderer {
 		}
 
 		const margin = webcam.margin ?? 24;
-		const size = getWebcamOverlaySizePx({
+		const widthPercent = webcam.width ?? webcam.size ?? 50;
+		const aspectSourceWidth =
+			liveSourceDimensions.width > 0
+				? liveSourceDimensions.width
+				: renderableWebcamSource.width;
+		const aspectSourceHeight =
+			liveSourceDimensions.height > 0
+				? liveSourceDimensions.height
+				: renderableWebcamSource.height;
+		const heightPercent = getCropMatchedWebcamHeightPercent(
+			widthPercent,
+			webcam.height ?? webcam.size ?? 50,
+			aspectSourceWidth,
+			aspectSourceHeight,
+			webcam.cropRegion,
+		);
+		const dimensions = getWebcamOverlayDimensionsPx({
 			containerWidth: this.config.width,
 			containerHeight: this.config.height,
-			sizePercent: webcam.size ?? 50,
+			widthPercent,
+			heightPercent,
 			margin,
 			zoomScale: this.animationState.appliedScale || 1,
 			reactToZoom: webcam.reactToZoom ?? true,
@@ -2875,7 +2944,8 @@ export class FrameRenderer {
 		const position = getWebcamOverlayPosition({
 			containerWidth: this.config.width,
 			containerHeight: this.config.height,
-			size,
+			width: dimensions.width,
+			height: dimensions.height,
 			margin,
 			positionPreset: webcam.positionPreset ?? webcam.corner,
 			positionX: webcam.positionX ?? 1,
@@ -2890,7 +2960,8 @@ export class FrameRenderer {
 		const nextLayout: WebcamLayoutCache = {
 			sourceWidth: renderableWebcamSource.width,
 			sourceHeight: renderableWebcamSource.height,
-			size,
+			width: dimensions.width,
+			height: dimensions.height,
 			positionX: position.x,
 			positionY: position.y,
 			radius,
@@ -2910,15 +2981,20 @@ export class FrameRenderer {
 		layoutCache: LayoutCache,
 		useVelocityMotionBlur: boolean,
 		includeOverlayLayers = true,
+		webcamTimeSecondsOverride?: number,
 	): Promise<RenderSnapshot> {
 		if (!this.app || !this.cameraContainer || !this.videoMaskGraphics) {
 			throw new Error("Renderer not initialized");
 		}
 
 		this.currentVideoTime = timestamp / 1_000_000;
+		const webcamRenderTimeSeconds = Math.max(
+			0,
+			webcamTimeSecondsOverride ?? this.currentVideoTime,
+		);
 
 		if (this.webcamForwardFrameSource || this.webcamVideoElement) {
-			await this.syncWebcamFrame(Math.max(0, this.currentVideoTime));
+			await this.syncWebcamFrame(webcamRenderTimeSeconds);
 		}
 
 		if (this.backgroundForwardFrameSource || this.backgroundVideoElement) {
@@ -2966,7 +3042,7 @@ export class FrameRenderer {
 			this.updateAnnotationLayer(timeMs);
 			this.updateCaptionLayer(timeMs);
 		}
-		this.updateWebcamOverlay();
+		this.updateWebcamOverlay(webcamRenderTimeSeconds);
 
 		const annotationContainerVisible = this.annotationContainer?.visible ?? true;
 		const captionContainerVisible = this.captionContainer?.visible ?? true;
@@ -3033,6 +3109,7 @@ export class FrameRenderer {
 		}
 
 		const samplePlan = buildTemporalSamplePlanUs(frameDurationUs, blurConfig);
+		const webcamReferenceTimeSeconds = Math.max(0, timestamp / 1_000_000);
 
 		compositeState.context.clearRect(
 			0,
@@ -3058,6 +3135,7 @@ export class FrameRenderer {
 				layoutCache,
 				false,
 				false,
+				webcamReferenceTimeSeconds,
 			);
 			lastSnapshot = snapshot;
 			if (Math.abs(sampleOffsetUs) < 0.0001) {
@@ -3082,7 +3160,11 @@ export class FrameRenderer {
 			(this.config.annotationRegions?.length ?? 0) > 0 ||
 			Boolean(this.captionCanvas && this.captionSprite?.visible);
 		if (hasOverlayCanvasWork) {
-			await this.composeBlurAnnotationFrame(resolvedSnapshot.timeMs, compositeState.canvas);
+			await this.composeBlurAnnotationFrame(
+				resolvedSnapshot.timeMs,
+				resolvedSnapshot.sceneTransform,
+				compositeState.canvas,
+			);
 		} else {
 			this.outputCanvasOverride = compositeState.canvas;
 		}
@@ -3489,10 +3571,7 @@ export class FrameRenderer {
 		this.videoSprite.scale.set(layout.scale);
 		this.videoSprite.position.set(layout.spriteX, layout.spriteY);
 
-		const previewWidth = this.config.previewWidth || 1920;
-		const previewHeight = this.config.previewHeight || 1080;
-		const canvasScaleFactor = Math.min(width / previewWidth, height / previewHeight);
-		const scaledBorderRadius = borderRadius * canvasScaleFactor;
+		const scaledBorderRadius = scalePreviewBorderRadius(width, height, borderRadius);
 
 		this.videoMaskGraphics.clear();
 		drawSquircleOnGraphics(this.videoMaskGraphics, {
@@ -3642,7 +3721,7 @@ export class FrameRenderer {
 			return 0;
 		}
 
-		const { region, strength, blendedScale, transition } = findDominantRegion(
+		const { region, strength, blendedScale } = findDominantRegion(
 			this.config.zoomRegions,
 			timeMs,
 			{
@@ -3681,43 +3760,6 @@ export class FrameRenderer {
 			targetScaleFactor = zoomScale;
 			targetFocus = regionFocus;
 			targetProgress = strength;
-
-			if (transition) {
-				const startTransform = computeZoomTransform({
-					stageSize: this.layoutCache.stageSize,
-					baseMask: this.layoutCache.maskRect,
-					zoomScale: transition.startScale,
-					zoomProgress: 1,
-					focusX: transition.startFocus.cx,
-					focusY: transition.startFocus.cy,
-				});
-				const endTransform = computeZoomTransform({
-					stageSize: this.layoutCache.stageSize,
-					baseMask: this.layoutCache.maskRect,
-					zoomScale: transition.endScale,
-					zoomProgress: 1,
-					focusX: transition.endFocus.cx,
-					focusY: transition.endFocus.cy,
-				});
-
-				const interpolatedTransform = {
-					scale:
-						startTransform.scale +
-						(endTransform.scale - startTransform.scale) * transition.progress,
-					x: startTransform.x + (endTransform.x - startTransform.x) * transition.progress,
-					y: startTransform.y + (endTransform.y - startTransform.y) * transition.progress,
-				};
-
-				targetScaleFactor = interpolatedTransform.scale;
-				targetFocus = computeFocusFromTransform({
-					stageSize: this.layoutCache.stageSize,
-					baseMask: this.layoutCache.maskRect,
-					zoomScale: interpolatedTransform.scale,
-					x: interpolatedTransform.x,
-					y: interpolatedTransform.y,
-				});
-				targetProgress = 1;
-			}
 		}
 
 		const state = this.animationState;
@@ -3981,7 +4023,6 @@ export class FrameRenderer {
 
 		this.annotationScaleFactor = 1;
 		this.lastSyncedWebcamTime = null;
-		this.lastWebcamCacheRefreshTime = null;
 		this.webcamRenderMode = "hidden";
 		this.webcamLayoutCache = null;
 		this.layoutCache = null;

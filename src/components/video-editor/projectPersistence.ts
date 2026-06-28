@@ -1,3 +1,4 @@
+import type { SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
 import type {
 	ExportBackendPreference,
 	ExportEncodingMode,
@@ -20,8 +21,8 @@ import {
 import { DEFAULT_WALLPAPER_PATH } from "@/lib/wallpapers";
 import { ASPECT_RATIOS, type AspectRatio, isCustomAspectRatio } from "@/utils/aspectRatioUtils";
 import { CURSOR_MOTION_PRESETS, resolveCursorMotionPresetId } from "./cursorMotionPresets";
-import type { SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
 import {
+	ADVANCED_VERTICAL_PADDING_MAX,
 	type AnnotationRegion,
 	type AudioRegion,
 	type AutoCaptionAnimation,
@@ -30,6 +31,7 @@ import {
 	type CaptionCueWord,
 	type ClipRegion,
 	type CropRegion,
+	type CursorClickEffectStyle,
 	type CursorStyle,
 	DEFAULT_ANNOTATION_POSITION,
 	DEFAULT_ANNOTATION_SIZE,
@@ -39,6 +41,11 @@ import {
 	DEFAULT_CONNECTED_ZOOM_EASING,
 	DEFAULT_CONNECTED_ZOOM_GAP_MS,
 	DEFAULT_CROP_REGION,
+	DEFAULT_CURSOR_CLICK_EFFECT,
+	DEFAULT_CURSOR_CLICK_EFFECT_COLOR,
+	DEFAULT_CURSOR_CLICK_EFFECT_DURATION_MS,
+	DEFAULT_CURSOR_CLICK_EFFECT_OPACITY,
+	DEFAULT_CURSOR_CLICK_EFFECT_SCALE,
 	DEFAULT_CURSOR_STYLE,
 	DEFAULT_CURSOR_SWAY,
 	DEFAULT_FIGURE_DATA,
@@ -62,6 +69,8 @@ import {
 	DEFAULT_ZOOM_OUT_EASING,
 	DEFAULT_ZOOM_SMOOTHNESS,
 	getDefaultCaptionFontFamily,
+	normalizeCursorClickEffectColor,
+	normalizeCursorClickEffectStyle,
 	type Padding,
 	type SpeedRegion,
 	type TrimRegion,
@@ -97,6 +106,11 @@ export interface ProjectEditorState {
 	showCursor: boolean;
 	loopCursor: boolean;
 	cursorStyle: CursorStyle;
+	cursorClickEffect: CursorClickEffectStyle;
+	cursorClickEffectColor: string;
+	cursorClickEffectScale: number;
+	cursorClickEffectOpacity: number;
+	cursorClickEffectDurationMs: number;
 	cursorSize: number;
 	cursorSmoothing: number;
 	cursorSpringStiffnessMultiplier: number;
@@ -163,10 +177,7 @@ type PersistedDevMotionBlurSettings = {
 export function stripPersistedDevMotionBlurSettings<T extends PersistedDevMotionBlurSettings>(
 	editor: T,
 ): Omit<T, keyof PersistedDevMotionBlurSettings> {
-	const {
-		zoomMotionBlurTuning: _zoomMotionBlurTuning,
-		...persistedEditor
-	} = editor;
+	const { zoomMotionBlurTuning: _zoomMotionBlurTuning, ...persistedEditor } = editor;
 
 	return persistedEditor;
 }
@@ -669,17 +680,17 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 					const startMs = Math.max(0, Math.min(rawStart, rawEnd));
 					const endMs = Math.max(startMs + 1, rawEnd);
 
-						return {
-							id: region.id,
-							startMs,
-							endMs,
-							audioPath: typeof region.audioPath === "string" ? region.audioPath : "",
-							volume: isFiniteNumber(region.volume) ? clamp(region.volume, 0, 1) : 1,
-							normalize: Boolean(region.normalize),
-							trackIndex: isFiniteNumber(region.trackIndex)
-								? Math.max(0, Math.floor(region.trackIndex))
-								: 0,
-						};
+					return {
+						id: region.id,
+						startMs,
+						endMs,
+						audioPath: typeof region.audioPath === "string" ? region.audioPath : "",
+						volume: isFiniteNumber(region.volume) ? clamp(region.volume, 0, 1) : 1,
+						normalize: Boolean(region.normalize),
+						trackIndex: isFiniteNumber(region.trackIndex)
+							? Math.max(0, Math.floor(region.trackIndex))
+							: 0,
+					};
 				})
 		: [];
 
@@ -854,6 +865,29 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 				)
 			: DEFAULT_MOTION_PRESET.cursorClickBounceDuration,
 	};
+	const normalizedCursorClickEffectScale = isFiniteNumber(
+		(editor as Partial<ProjectEditorState>).cursorClickEffectScale,
+	)
+		? clamp((editor as Partial<ProjectEditorState>).cursorClickEffectScale as number, 0.5, 2)
+		: DEFAULT_CURSOR_CLICK_EFFECT_SCALE;
+	const normalizedCursorClickEffectOpacity = isFiniteNumber(
+		(editor as Partial<ProjectEditorState>).cursorClickEffectOpacity,
+	)
+		? clamp((editor as Partial<ProjectEditorState>).cursorClickEffectOpacity as number, 0, 1)
+		: DEFAULT_CURSOR_CLICK_EFFECT_OPACITY;
+	const normalizedCursorClickEffectDurationMs = isFiniteNumber(
+		(editor as Partial<ProjectEditorState>).cursorClickEffectDurationMs,
+	)
+		? clamp(
+				(editor as Partial<ProjectEditorState>).cursorClickEffectDurationMs as number,
+				120,
+				1200,
+			)
+		: DEFAULT_CURSOR_CLICK_EFFECT_DURATION_MS;
+	const normalizedCursorClickEffectColor = normalizeCursorClickEffectColor(
+		(editor as Partial<ProjectEditorState>).cursorClickEffectColor,
+		DEFAULT_CURSOR_CLICK_EFFECT_COLOR,
+	);
 	const normalizedMotionPreset =
 		CURSOR_MOTION_PRESETS[resolveCursorMotionPresetId(normalizedMotionValues)];
 
@@ -881,6 +915,14 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		showCursor: typeof editor.showCursor === "boolean" ? editor.showCursor : true,
 		loopCursor: typeof editor.loopCursor === "boolean" ? editor.loopCursor : false,
 		cursorStyle: normalizedCursorStyle,
+		cursorClickEffect: normalizeCursorClickEffectStyle(
+			(editor as Partial<ProjectEditorState>).cursorClickEffect,
+			DEFAULT_CURSOR_CLICK_EFFECT,
+		),
+		cursorClickEffectColor: normalizedCursorClickEffectColor,
+		cursorClickEffectScale: normalizedCursorClickEffectScale,
+		cursorClickEffectOpacity: normalizedCursorClickEffectOpacity,
+		cursorClickEffectDurationMs: normalizedCursorClickEffectDurationMs,
 		cursorSize: normalizedMotionPreset.cursorSize,
 		cursorSmoothing: normalizedMotionPreset.cursorSmoothing,
 		cursorSpringStiffnessMultiplier: normalizedMotionPreset.cursorSpringStiffnessMultiplier,
@@ -909,14 +951,17 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 			const p = editor.padding;
 			if (p && typeof p === "object") {
 				const linked = typeof p.linked === "boolean" ? p.linked : true;
-				const top = isFiniteNumber(p.top) ? clamp(p.top, 0, 100) : DEFAULT_PADDING.top;
+				const verticalMax = linked ? 100 : ADVANCED_VERTICAL_PADDING_MAX;
+				const top = isFiniteNumber(p.top)
+					? clamp(p.top, 0, verticalMax)
+					: DEFAULT_PADDING.top;
 				if (linked) {
 					return { top, bottom: top, left: top, right: top, linked: true };
 				}
 				return {
 					top,
 					bottom: isFiniteNumber(p.bottom)
-						? clamp(p.bottom, 0, 100)
+						? clamp(p.bottom, 0, verticalMax)
 						: DEFAULT_PADDING.bottom,
 					left: isFiniteNumber(p.left) ? clamp(p.left, 0, 100) : DEFAULT_PADDING.left,
 					right: isFiniteNumber(p.right) ? clamp(p.right, 0, 100) : DEFAULT_PADDING.right,
@@ -987,6 +1032,16 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 					? webcam.corner
 					: DEFAULT_WEBCAM_OVERLAY.corner,
 			size: isFiniteNumber(webcam.size) ? clamp(webcam.size, 10, 100) : DEFAULT_WEBCAM_SIZE,
+			width: isFiniteNumber(webcam.width)
+				? clamp(webcam.width, 10, 100)
+				: isFiniteNumber(webcam.size)
+					? clamp(webcam.size, 10, 100)
+					: DEFAULT_WEBCAM_SIZE,
+			height: isFiniteNumber(webcam.height)
+				? clamp(webcam.height, 10, 100)
+				: isFiniteNumber(webcam.size)
+					? clamp(webcam.size, 10, 100)
+					: DEFAULT_WEBCAM_SIZE,
 			reactToZoom:
 				typeof webcam.reactToZoom === "boolean"
 					? webcam.reactToZoom

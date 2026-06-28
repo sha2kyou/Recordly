@@ -1,10 +1,11 @@
+import { loadAppSetting, saveAppSetting } from "../../lib/appSettings";
 import {
 	normalizeExportBackendPreference,
 	normalizeExportMp4FrameRate,
 	normalizeExportPipelineModel,
 	normalizeProjectEditor,
-	stripPersistedDevMotionBlurSettings,
 	type ProjectEditorState,
+	stripPersistedDevMotionBlurSettings,
 } from "./projectPersistence";
 
 type PersistedEditorControls = Pick<
@@ -38,6 +39,11 @@ type PersistedEditorControls = Pick<
 	| "cameraSpringDampingMultiplier"
 	| "cameraSpringMassMultiplier"
 	| "cursorMotionBlur"
+	| "cursorClickEffect"
+	| "cursorClickEffectColor"
+	| "cursorClickEffectScale"
+	| "cursorClickEffectOpacity"
+	| "cursorClickEffectDurationMs"
 	| "cursorClickBounce"
 	| "cursorClickBounceDuration"
 	| "cursorSway"
@@ -60,8 +66,10 @@ type PersistedEditorControls = Pick<
 type PartialEditorControls = Partial<PersistedEditorControls>;
 
 type PresetAutoCaptionSettings = ProjectEditorState["autoCaptionSettings"];
+type PresetCropRegion = ProjectEditorState["cropRegion"];
 
 export interface EditorPresetSnapshot extends PersistedEditorControls {
+	cropRegion: PresetCropRegion;
 	autoCaptionSettings: PresetAutoCaptionSettings;
 	whisperExecutablePath: string | null;
 	whisperModelPath: string | null;
@@ -119,6 +127,11 @@ export const DEFAULT_EDITOR_PREFERENCES: EditorPreferences = {
 	cameraSpringDampingMultiplier: DEFAULT_EDITOR_CONTROLS.cameraSpringDampingMultiplier,
 	cameraSpringMassMultiplier: DEFAULT_EDITOR_CONTROLS.cameraSpringMassMultiplier,
 	cursorMotionBlur: DEFAULT_EDITOR_CONTROLS.cursorMotionBlur,
+	cursorClickEffect: DEFAULT_EDITOR_CONTROLS.cursorClickEffect,
+	cursorClickEffectColor: DEFAULT_EDITOR_CONTROLS.cursorClickEffectColor,
+	cursorClickEffectScale: DEFAULT_EDITOR_CONTROLS.cursorClickEffectScale,
+	cursorClickEffectOpacity: DEFAULT_EDITOR_CONTROLS.cursorClickEffectOpacity,
+	cursorClickEffectDurationMs: DEFAULT_EDITOR_CONTROLS.cursorClickEffectDurationMs,
 	cursorClickBounce: DEFAULT_EDITOR_CONTROLS.cursorClickBounce,
 	cursorClickBounceDuration: DEFAULT_EDITOR_CONTROLS.cursorClickBounceDuration,
 	cursorSway: DEFAULT_EDITOR_CONTROLS.cursorSway,
@@ -195,9 +208,13 @@ function normalizeEditorPresetSnapshot(candidate: unknown): EditorPresetSnapshot
 		candidate && typeof candidate === "object"
 			? (candidate as Partial<EditorPresetSnapshot>)
 			: {};
+	const normalizedCropRegion = normalizeProjectEditor({
+		cropRegion: raw.cropRegion,
+	}).cropRegion;
 
 	return {
 		...normalizeEditorControls(normalizedPreferences, normalizedPreferences),
+		cropRegion: normalizedCropRegion,
 		autoCaptionSettings: normalizePresetAutoCaptionSettings(raw.autoCaptionSettings),
 		whisperExecutablePath:
 			normalizeNullablePath(raw.whisperExecutablePath) ??
@@ -278,14 +295,12 @@ function normalizeEditorControls(
 		zoomInDurationMs: sanitizedRaw.zoomInDurationMs ?? fallback.zoomInDurationMs,
 		zoomInOverlapMs: sanitizedRaw.zoomInOverlapMs ?? fallback.zoomInOverlapMs,
 		zoomOutDurationMs: sanitizedRaw.zoomOutDurationMs ?? fallback.zoomOutDurationMs,
-		connectedZoomGapMs:
-			sanitizedRaw.connectedZoomGapMs ?? fallback.connectedZoomGapMs,
+		connectedZoomGapMs: sanitizedRaw.connectedZoomGapMs ?? fallback.connectedZoomGapMs,
 		connectedZoomDurationMs:
 			sanitizedRaw.connectedZoomDurationMs ?? fallback.connectedZoomDurationMs,
 		zoomInEasing: sanitizedRaw.zoomInEasing ?? fallback.zoomInEasing,
 		zoomOutEasing: sanitizedRaw.zoomOutEasing ?? fallback.zoomOutEasing,
-		connectedZoomEasing:
-			sanitizedRaw.connectedZoomEasing ?? fallback.connectedZoomEasing,
+		connectedZoomEasing: sanitizedRaw.connectedZoomEasing ?? fallback.connectedZoomEasing,
 		showCursor: sanitizedRaw.showCursor ?? fallback.showCursor,
 		loopCursor: sanitizedRaw.loopCursor ?? fallback.loopCursor,
 		cursorStyle: sanitizedRaw.cursorStyle ?? fallback.cursorStyle,
@@ -295,19 +310,26 @@ function normalizeEditorControls(
 			sanitizedRaw.cursorSpringStiffnessMultiplier ??
 			fallback.cursorSpringStiffnessMultiplier,
 		cursorSpringDampingMultiplier:
-			sanitizedRaw.cursorSpringDampingMultiplier ??
-			fallback.cursorSpringDampingMultiplier,
+			sanitizedRaw.cursorSpringDampingMultiplier ?? fallback.cursorSpringDampingMultiplier,
 		cursorSpringMassMultiplier:
 			sanitizedRaw.cursorSpringMassMultiplier ?? fallback.cursorSpringMassMultiplier,
 		cameraSpringStiffnessMultiplier:
 			sanitizedRaw.cameraSpringStiffnessMultiplier ??
 			fallback.cameraSpringStiffnessMultiplier,
 		cameraSpringDampingMultiplier:
-			sanitizedRaw.cameraSpringDampingMultiplier ??
-			fallback.cameraSpringDampingMultiplier,
+			sanitizedRaw.cameraSpringDampingMultiplier ?? fallback.cameraSpringDampingMultiplier,
 		cameraSpringMassMultiplier:
 			sanitizedRaw.cameraSpringMassMultiplier ?? fallback.cameraSpringMassMultiplier,
 		cursorMotionBlur: sanitizedRaw.cursorMotionBlur ?? fallback.cursorMotionBlur,
+		cursorClickEffect: sanitizedRaw.cursorClickEffect ?? fallback.cursorClickEffect,
+		cursorClickEffectColor:
+			sanitizedRaw.cursorClickEffectColor ?? fallback.cursorClickEffectColor,
+		cursorClickEffectScale:
+			sanitizedRaw.cursorClickEffectScale ?? fallback.cursorClickEffectScale,
+		cursorClickEffectOpacity:
+			sanitizedRaw.cursorClickEffectOpacity ?? fallback.cursorClickEffectOpacity,
+		cursorClickEffectDurationMs:
+			sanitizedRaw.cursorClickEffectDurationMs ?? fallback.cursorClickEffectDurationMs,
 		cursorClickBounce: sanitizedRaw.cursorClickBounce ?? fallback.cursorClickBounce,
 		cursorClickBounceDuration:
 			sanitizedRaw.cursorClickBounceDuration ?? fallback.cursorClickBounceDuration,
@@ -317,8 +339,7 @@ function normalizeEditorControls(
 		frame: sanitizedRaw.frame !== undefined ? sanitizedRaw.frame : fallback.frame,
 		webcam: sanitizedRaw.webcam ?? fallback.webcam,
 		aspectRatio: sanitizedRaw.aspectRatio ?? fallback.aspectRatio,
-		exportEncodingMode:
-			sanitizedRaw.exportEncodingMode ?? fallback.exportEncodingMode,
+		exportEncodingMode: sanitizedRaw.exportEncodingMode ?? fallback.exportEncodingMode,
 		exportBackendPreference:
 			sanitizedRaw.exportBackendPreference === undefined
 				? fallback.exportBackendPreference
@@ -370,6 +391,11 @@ function normalizeEditorControls(
 		cameraSpringDampingMultiplier: normalized.cameraSpringDampingMultiplier,
 		cameraSpringMassMultiplier: normalized.cameraSpringMassMultiplier,
 		cursorMotionBlur: normalized.cursorMotionBlur,
+		cursorClickEffect: normalized.cursorClickEffect,
+		cursorClickEffectColor: normalized.cursorClickEffectColor,
+		cursorClickEffectScale: normalized.cursorClickEffectScale,
+		cursorClickEffectOpacity: normalized.cursorClickEffectOpacity,
+		cursorClickEffectDurationMs: normalized.cursorClickEffectDurationMs,
 		cursorClickBounce: normalized.cursorClickBounce,
 		cursorClickBounceDuration: normalized.cursorClickBounceDuration,
 		cursorSway: normalized.cursorSway,
@@ -422,12 +448,13 @@ export function normalizeEditorPreferences(
 }
 
 export function loadEditorPreferences(): EditorPreferences {
-	if (typeof globalThis.localStorage === "undefined") {
-		return DEFAULT_EDITOR_PREFERENCES;
+	const persisted = loadAppSetting<unknown>(EDITOR_PREFERENCES_STORAGE_KEY);
+	if (persisted !== null) {
+		return normalizeEditorPreferences(persisted);
 	}
 
 	try {
-		const stored = globalThis.localStorage.getItem(EDITOR_PREFERENCES_STORAGE_KEY);
+		const stored = globalThis.localStorage?.getItem(EDITOR_PREFERENCES_STORAGE_KEY);
 		if (!stored) {
 			return DEFAULT_EDITOR_PREFERENCES;
 		}
@@ -439,29 +466,38 @@ export function loadEditorPreferences(): EditorPreferences {
 }
 
 export function saveEditorPreferences(preferences: Partial<EditorPreferences>): void {
-	if (typeof globalThis.localStorage === "undefined") {
-		return;
-	}
-
 	try {
 		const current = loadEditorPreferences();
 		const merged = normalizeEditorPreferences({ ...current, ...preferences }, current);
-		globalThis.localStorage.setItem(
-			EDITOR_PREFERENCES_STORAGE_KEY,
-			JSON.stringify(stripPersistedDevMotionBlurSettings(merged)),
-		);
+		const persisted = stripPersistedDevMotionBlurSettings(merged);
+		saveAppSetting(EDITOR_PREFERENCES_STORAGE_KEY, persisted);
+		saveLocalStorageJson(EDITOR_PREFERENCES_STORAGE_KEY, persisted);
 	} catch {
 		// Ignore storage failures so editor controls still work.
 	}
 }
 
+function saveLocalStorageJson(key: string, value: unknown): boolean {
+	try {
+		if (typeof globalThis.localStorage === "undefined") {
+			return false;
+		}
+
+		globalThis.localStorage.setItem(key, JSON.stringify(value));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function loadEditorPresets(): EditorPreset[] {
-	if (typeof globalThis.localStorage === "undefined") {
-		return [];
+	const persisted = loadAppSetting<unknown>(EDITOR_PRESETS_STORAGE_KEY);
+	if (persisted !== null) {
+		return normalizeEditorPresets(persisted);
 	}
 
 	try {
-		const stored = globalThis.localStorage.getItem(EDITOR_PRESETS_STORAGE_KEY);
+		const stored = globalThis.localStorage?.getItem(EDITOR_PRESETS_STORAGE_KEY);
 		if (!stored) {
 			return [];
 		}
@@ -473,14 +509,14 @@ export function loadEditorPresets(): EditorPreset[] {
 }
 
 export function saveEditorPresets(presets: EditorPreset[]): boolean {
-	if (typeof globalThis.localStorage === "undefined") {
-		return false;
-	}
-
 	try {
 		const normalized = normalizeEditorPresets(presets);
-		globalThis.localStorage.setItem(EDITOR_PRESETS_STORAGE_KEY, JSON.stringify(normalized));
-		return true;
+		const persistedToAppSettings = saveAppSetting(EDITOR_PRESETS_STORAGE_KEY, normalized);
+		const persistedToLocalStorage = saveLocalStorageJson(
+			EDITOR_PRESETS_STORAGE_KEY,
+			normalized,
+		);
+		return persistedToAppSettings || persistedToLocalStorage;
 	} catch {
 		// Ignore storage failures so editor controls still work.
 		return false;

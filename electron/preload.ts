@@ -90,6 +90,18 @@ type NativeVideoMetadataProbe = {
 	audioCodec?: string;
 	audioSampleRate?: number;
 };
+type NativeExportCapabilities = {
+	platform: NodeJS.Platform;
+	nvidiaCuda: {
+		available: boolean;
+		skipReason: string | null;
+		hasNvidiaGpu: boolean | null;
+		hasWrapper: boolean;
+		explicitEnabled: boolean;
+		explicitDisabled: boolean;
+		userOptInRequired: boolean;
+	};
+};
 
 const nativeVideoExportWriteRequests = new Map<
 	number,
@@ -155,6 +167,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	hudOverlaySetIgnoreMouse: (ignore: boolean) => {
 		ipcRenderer.send("hud-overlay-set-ignore-mouse", ignore);
 	},
+	hudOverlaySetSourceSelectionActive: (active: boolean) => {
+		ipcRenderer.send("hud-overlay-set-source-selection-active", active);
+	},
 	hudOverlayDrag: (phase: "start" | "move" | "end", screenX: number, screenY: number) => {
 		ipcRenderer.send("hud-overlay-drag", phase, screenX, screenY);
 	},
@@ -201,6 +216,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		return ipcRenderer.invoke("probe-native-video-metadata", filePath) as Promise<{
 			success: boolean;
 			metadata?: NativeVideoMetadataProbe;
+			error?: string;
+		}>;
+	},
+	getNativeExportCapabilities: () => {
+		return ipcRenderer.invoke("get-native-export-capabilities") as Promise<{
+			success: boolean;
+			capabilities?: NativeExportCapabilities;
 			error?: string;
 		}>;
 	},
@@ -264,6 +286,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		}>;
 		chunkDurationSec?: number;
 		experimentalWindowsGpuCompositor?: boolean;
+		experimentalNvidiaCudaExport?: boolean;
 		audioOptions?: {
 			audioMode?: "none" | "copy-source" | "trim-source" | "edited-track";
 			audioSourcePath?: string | null;
@@ -442,6 +465,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		tempPath: string;
 		fileName: string;
 		outputPath?: string | null;
+		captionSidecar?: {
+			format: "srt" | "vtt" | "both";
+			cues: Array<{
+				startMs: number;
+				endMs: number;
+				text: string;
+			}>;
+		};
 	}) => {
 		return ipcRenderer.invoke("finalize-exported-video", payload);
 	},
@@ -624,14 +655,41 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	}) => {
 		return ipcRenderer.invoke("show-system-message", options);
 	},
-	saveExportedVideo: (videoData: ArrayBuffer, fileName: string) => {
-		return ipcRenderer.invoke("save-exported-video", videoData, fileName);
+	saveExportedVideo: (
+		videoData: ArrayBuffer,
+		fileName: string,
+		captionSidecar?: {
+			format: "srt" | "vtt" | "both";
+			cues: Array<{
+				startMs: number;
+				endMs: number;
+				text: string;
+			}>;
+		},
+	) => {
+		return ipcRenderer.invoke("save-exported-video", videoData, fileName, captionSidecar);
 	},
-	writeExportedVideoToPath: (videoData: ArrayBuffer, outputPath: string) => {
-		return ipcRenderer.invoke("write-exported-video-to-path", videoData, outputPath);
+	writeExportedVideoToPath: (
+		videoData: ArrayBuffer,
+		outputPath: string,
+		captionSidecar?: {
+			format: "srt" | "vtt" | "both";
+			cues: Array<{
+				startMs: number;
+				endMs: number;
+				text: string;
+			}>;
+		},
+	) => {
+		return ipcRenderer.invoke(
+			"write-exported-video-to-path",
+			videoData,
+			outputPath,
+			captionSidecar,
+		);
 	},
-	openVideoFilePicker: () => {
-		return ipcRenderer.invoke("open-video-file-picker");
+	openVideoFilePicker: (options?: { includeProjects?: boolean }) => {
+		return ipcRenderer.invoke("open-video-file-picker", options);
 	},
 	openAudioFilePicker: () => {
 		return ipcRenderer.invoke("open-audio-file-picker");
@@ -700,8 +758,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		return ipcRenderer.invoke("set-current-recording-session", session, options);
 	},
 	onRecordingSessionChanged: (callback: (session: RecordingSessionData | null) => void) => {
-		const listener = (_event: Electron.IpcRendererEvent, payload: RecordingSessionData | null) =>
-			callback(payload);
+		const listener = (
+			_event: Electron.IpcRendererEvent,
+			payload: RecordingSessionData | null,
+		) => callback(payload);
 		ipcRenderer.on("recording-session-changed", listener);
 		return () => ipcRenderer.removeListener("recording-session-changed", listener);
 	},
@@ -740,12 +800,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		projectData: unknown,
 		projectName: string,
 		thumbnailDataUrl?: string | null,
+		mode?: "rename" | "copy",
 	) => {
 		return ipcRenderer.invoke(
 			"save-project-file-named",
 			projectData,
 			projectName,
 			thumbnailDataUrl,
+			mode,
 		);
 	},
 	loadProjectFile: () => {
@@ -765,84 +827,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	},
 	openProjectsDirectory: () => {
 		return ipcRenderer.invoke("open-projects-directory");
-	},
-	installDownloadedUpdate: () => {
-		return ipcRenderer.invoke("install-downloaded-update");
-	},
-	downloadAvailableUpdate: (installAfterDownload?: boolean) => {
-		return ipcRenderer.invoke("download-available-update", installAfterDownload);
-	},
-	deferDownloadedUpdate: (delayMs?: number) => {
-		return ipcRenderer.invoke("defer-downloaded-update", delayMs);
-	},
-	dismissUpdateToast: () => {
-		return ipcRenderer.invoke("dismiss-update-toast");
-	},
-	skipUpdateVersion: () => {
-		return ipcRenderer.invoke("skip-update-version");
-	},
-	getCurrentUpdateToastPayload: () => {
-		return ipcRenderer.invoke("get-current-update-toast-payload");
-	},
-	getUpdateStatusSummary: () => {
-		return ipcRenderer.invoke("get-update-status-summary");
-	},
-	previewUpdateToast: () => {
-		return ipcRenderer.invoke("preview-update-toast");
-	},
-	checkForAppUpdates: () => {
-		return ipcRenderer.invoke("check-for-app-updates");
-	},
-	onUpdateToastStateChanged: (
-		callback: (
-			payload: {
-				version: string;
-				detail: string;
-				phase: "available" | "downloading" | "ready" | "error";
-				delayMs: number;
-				isPreview?: boolean;
-				progressPercent?: number;
-				transferredBytes?: number;
-				totalBytes?: number;
-				remainingBytes?: number;
-				bytesPerSecond?: number;
-				primaryAction?: "install-and-restart" | "retry-check";
-			} | null,
-		) => void,
-	) => {
-		const listener = (
-			_event: Electron.IpcRendererEvent,
-			payload: {
-				version: string;
-				detail: string;
-				phase: "available" | "downloading" | "ready" | "error";
-				delayMs: number;
-				isPreview?: boolean;
-				progressPercent?: number;
-				transferredBytes?: number;
-				totalBytes?: number;
-				remainingBytes?: number;
-				bytesPerSecond?: number;
-				primaryAction?: "install-and-restart" | "retry-check";
-			} | null,
-		) => callback(payload);
-		ipcRenderer.on("update-toast-state", listener);
-		return () => ipcRenderer.removeListener("update-toast-state", listener);
-	},
-	onUpdateReadyToast: (
-		callback: (payload: {
-			version: string;
-			detail: string;
-			delayMs: number;
-			isPreview?: boolean;
-		}) => void,
-	) => {
-		const listener = (
-			_event: Electron.IpcRendererEvent,
-			payload: { version: string; detail: string; delayMs: number; isPreview?: boolean },
-		) => callback(payload);
-		ipcRenderer.on("update-ready-toast", listener);
-		return () => ipcRenderer.removeListener("update-ready-toast", listener);
 	},
 	onMenuLoadProject: (callback: () => void) => {
 		const listener = () => callback();
@@ -882,6 +866,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	},
 	saveShortcuts: (shortcuts: unknown) => {
 		return ipcRenderer.invoke("save-shortcuts", shortcuts);
+	},
+	getAppSetting: (key: string) => {
+		const result = ipcRenderer.sendSync("app-settings:get", key) as {
+			success?: boolean;
+			value?: unknown;
+		};
+		return result?.success ? (result.value ?? null) : null;
+	},
+	setAppSetting: (key: string, value: unknown) => {
+		const result = ipcRenderer.sendSync("app-settings:set", key, value) as {
+			success?: boolean;
+		};
+		return result?.success === true;
 	},
 	setHasUnsavedChanges: (hasChanges: boolean) => {
 		ipcRenderer.send("set-has-unsaved-changes", hasChanges);

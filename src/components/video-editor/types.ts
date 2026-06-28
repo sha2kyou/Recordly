@@ -46,12 +46,58 @@ export interface CursorVisualSettings {
 	motionBlur: number;
 	clickBounce: number;
 	clickBounceDuration: number;
+	clickEffect: CursorClickEffectStyle;
+	clickEffectColor: string;
+	clickEffectScale: number;
+	clickEffectOpacity: number;
+	clickEffectDurationMs: number;
 	sway: number;
 	style: CursorStyle;
 }
 
 export type CursorStyle = "macos" | "tahoe" | "tahoe-inverted" | "dot" | "figma" | (string & {}); // extension-contributed cursor styles
-export const DEFAULT_CURSOR_STYLE: CursorStyle = "macos";
+export const DEFAULT_CURSOR_STYLE: CursorStyle = "tahoe";
+
+export type CursorClickEffectStyle = "none" | "spotlight" | "ripple" | "echo";
+export const DEFAULT_CURSOR_CLICK_EFFECT: CursorClickEffectStyle = "none";
+export const DEFAULT_CURSOR_CLICK_EFFECT_COLOR = "#2563EB";
+export const DEFAULT_CURSOR_CLICK_EFFECT_SCALE = 1;
+export const DEFAULT_CURSOR_CLICK_EFFECT_OPACITY = 1;
+export const DEFAULT_CURSOR_CLICK_EFFECT_DURATION_MS = 600;
+
+export function normalizeCursorClickEffectStyle(
+	value: unknown,
+	fallback: CursorClickEffectStyle = DEFAULT_CURSOR_CLICK_EFFECT,
+): CursorClickEffectStyle {
+	if (value === "burst") {
+		return "echo";
+	}
+
+	return value === "none" || value === "spotlight" || value === "ripple" || value === "echo"
+		? value
+		: fallback;
+}
+
+export function normalizeCursorClickEffectColor(
+	value: unknown,
+	fallback: string = DEFAULT_CURSOR_CLICK_EFFECT_COLOR,
+): string {
+	if (typeof value !== "string") {
+		return fallback;
+	}
+
+	const trimmed = value.trim();
+	if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(trimmed)) {
+		return fallback;
+	}
+
+	if (trimmed.length === 4) {
+		const [red, green, blue] = trimmed.slice(1).split("");
+		return `#${red}${red}${green}${green}${blue}${blue}`.toUpperCase();
+	}
+
+	return trimmed.toUpperCase();
+}
 
 export type EditorEffectSection =
 	| "scene"
@@ -90,6 +136,8 @@ export interface WebcamOverlaySettings {
 	positionX: number;
 	positionY: number;
 	size: number;
+	width: number;
+	height: number;
 	reactToZoom: boolean;
 	cornerRadius: number;
 	shadow: number;
@@ -101,7 +149,7 @@ export const DEFAULT_CURSOR_SMOOTHING = 0.67;
 export const DEFAULT_CURSOR_MOTION_BLUR = 0.4;
 export const DEFAULT_CURSOR_CLICK_BOUNCE = 2.5;
 export const DEFAULT_CURSOR_CLICK_BOUNCE_DURATION = 350;
-export const DEFAULT_CURSOR_SWAY = 0.25;
+export const DEFAULT_CURSOR_SWAY = 0.4;
 export const DEFAULT_ZOOM_SMOOTHNESS = 0.5;
 export const DEFAULT_ZOOM_MOTION_BLUR = 0.35;
 export interface ZoomMotionBlurTuning {
@@ -152,6 +200,8 @@ export const DEFAULT_WEBCAM_OVERLAY: WebcamOverlaySettings = {
 	positionX: DEFAULT_WEBCAM_POSITION_X,
 	positionY: DEFAULT_WEBCAM_POSITION_Y,
 	size: DEFAULT_WEBCAM_SIZE,
+	width: DEFAULT_WEBCAM_SIZE,
+	height: DEFAULT_WEBCAM_SIZE,
 	reactToZoom: DEFAULT_WEBCAM_REACT_TO_ZOOM,
 	cornerRadius: DEFAULT_WEBCAM_CORNER_RADIUS,
 	shadow: DEFAULT_WEBCAM_SHADOW,
@@ -451,6 +501,8 @@ export const DEFAULT_CROP_REGION: CropRegion = {
 	height: 1,
 };
 
+export const ADVANCED_VERTICAL_PADDING_MAX = 250;
+
 export interface Padding {
 	top: number;
 	bottom: number;
@@ -466,7 +518,10 @@ export const DEFAULT_PADDING: Padding = {
 	right: 20,
 	linked: true,
 };
-export type { SourceAudioTrackSetting, SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
+export type {
+	SourceAudioTrackSetting,
+	SourceAudioTrackSettings,
+} from "@/components/video-editor/audio/audioTypes";
 
 export interface AudioRegion {
 	id: string;

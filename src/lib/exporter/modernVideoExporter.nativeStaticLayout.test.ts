@@ -69,6 +69,7 @@ function createExporter(overrides: Record<string, unknown> = {}) {
 			ctx: CanvasRenderingContext2D,
 			wallpaper: string,
 		) => CanvasGradient | null;
+		getNativeStaticLayoutCursorSize: (contentWidth: number) => number;
 	};
 }
 
@@ -149,6 +150,21 @@ describe("ModernVideoExporter native static-layout eligibility", () => {
 		});
 	});
 
+	it("mixes companion sidecar audio when the source MP4 also has an audio track", () => {
+		const videoPath = "C:\\recordly\\recording.mp4";
+		const micPath = "C:\\recordly\\recording.mic.wav";
+		const exporter = createExporter({
+			videoUrl: `file:///${videoPath.replace(/\\/g, "/")}`,
+			sourceAudioFallbackPaths: [micPath],
+		});
+
+		expect(exporter.buildNativeAudioPlan(videoInfo)).toMatchObject({
+			audioMode: "edited-track",
+			strategy: "offline-render-fallback",
+			sourceAudioFallbackPaths: [expect.stringMatching(/recording\.mp4$/), micPath],
+		});
+	});
+
 	it("keeps timed companion audio on the offline render path", () => {
 		const audioPath = "C:\\recordly\\recording.system.wav";
 		const speedRegions: SpeedRegion[] = [
@@ -167,9 +183,10 @@ describe("ModernVideoExporter native static-layout eligibility", () => {
 				audioCodec: undefined,
 				audioSampleRate: undefined,
 			}),
-		).toEqual({
+		).toMatchObject({
 			audioMode: "edited-track",
 			strategy: "offline-render-fallback",
+			sourceAudioFallbackPaths: [audioPath],
 		});
 	});
 
@@ -217,6 +234,58 @@ describe("ModernVideoExporter native static-layout eligibility", () => {
 				60,
 			),
 		).toBeNull();
+	});
+
+	it("scales native static-layout cursor size with a minimum visible floor", () => {
+		const exporter = createExporter({ cursorSize: 3, cursorStyle: "tahoe" });
+
+		expect(exporter.getNativeStaticLayoutCursorSize(1920)).toBeCloseTo(84, 6);
+		expect(exporter.getNativeStaticLayoutCursorSize(960)).toBeCloseTo(46.2, 6);
+		expect(exporter.getNativeStaticLayoutCursorSize(480)).toBeCloseTo(46.2, 6);
+	});
+
+	it("skips native static-layout when cursor click effects are enabled", () => {
+		const exporter = createExporter({
+			showCursor: true,
+			cursorClickEffect: "echo",
+			cursorTelemetry: [
+				{ timeMs: 0, cx: 0.25, cy: 0.35 },
+				{ timeMs: 1_000, cx: 0.5, cy: 0.55, interactionType: "click" },
+			],
+		});
+
+		expect(
+			exporter.getNativeStaticLayoutSkipReason(
+				{
+					audioMode: "copy-source",
+					audioSourcePath: "recording.mp4",
+				},
+				videoInfo,
+				60,
+			),
+		).toBe("unsupported-cursor-click-effect");
+	});
+
+	it("skips native static-layout when click effects are enabled and cursor is hidden", () => {
+		const exporter = createExporter({
+			showCursor: false,
+			cursorClickEffect: "echo",
+			cursorTelemetry: [
+				{ timeMs: 0, cx: 0.25, cy: 0.35 },
+				{ timeMs: 1_000, cx: 0.5, cy: 0.55, interactionType: "click" },
+			],
+		});
+
+		expect(
+			exporter.getNativeStaticLayoutSkipReason(
+				{
+					audioMode: "copy-source",
+					audioSourcePath: "recording.mp4",
+				},
+				videoInfo,
+				60,
+			),
+		).toBe("unsupported-cursor-click-effect");
 	});
 
 	it("reports frame overlays as the remaining native overlay blocker", () => {
@@ -646,6 +715,28 @@ describe("ModernVideoExporter native static-layout eligibility", () => {
 				63,
 			),
 		).toBeNull();
+	});
+
+	it("skips native static layout for rectangular webcam overlays", () => {
+		const exporter = createExporter({
+			webcam: {
+				enabled: true,
+				sourcePath: "C:\\recordly\\webcam.mp4",
+				width: 60,
+				height: 35,
+			},
+		});
+
+		expect(
+			exporter.getNativeStaticLayoutSkipReason(
+				{
+					audioMode: "edited-track",
+					strategy: "offline-render-fallback",
+				},
+				videoInfo,
+				60,
+			),
+		).toBe("unsupported-rectangular-webcam-overlay");
 	});
 
 	it("allows native speed timelines with a resolvable webcam source", () => {
