@@ -19,7 +19,6 @@ import {
 	SkipForward,
 	Sparkle,
 	ArrowCounterClockwise as Undo2,
-	UserCircle as User,
 	SpeakerLow as Volume1,
 	SpeakerHigh as Volume2,
 	SpeakerX as VolumeX,
@@ -6064,7 +6063,7 @@ export default function VideoEditor() {
 					{/* Settings sidebar */}
 					<div className="flex flex-shrink-0 gap-1.5">
 						{/* Icon rail */}
-						<div className="flex flex-shrink-0 flex-col items-center gap-0.5 px-2 py-2">
+						<div className="flex flex-shrink-0 flex-col items-center gap-1.5 px-2.5 py-2.5">
 							{editorSectionButtons.map((section) => {
 								const isActive = activeEffectSection === section.id;
 								return (
@@ -6101,17 +6100,17 @@ export default function VideoEditor() {
 													<ExtensionIcon
 														icon={section.icon}
 														extensionPath={section.extensionPath}
-														className="h-[27px] w-[27px]"
+														className="h-5 w-5"
 													/>
 												) : (
 													<section.icon
-														className="h-[27px] w-[27px]"
+														className="h-5 w-5"
 														weight={isActive ? "fill" : "regular"}
 													/>
 												)}
 											</motion.span>
 										</motion.button>
-										<div className="ml-1.5 h-1.5 w-1.5 flex-shrink-0">
+										<div className="ml-2 h-1.5 w-1.5 flex-shrink-0">
 											{isActive && (
 												<motion.span
 													layoutId="rail-active-dot"
@@ -6130,19 +6129,6 @@ export default function VideoEditor() {
 									</div>
 								);
 							})}
-							<div className="mt-auto flex flex-col items-center gap-0.5 pt-3">
-								<motion.button
-									type="button"
-									onClick={() => toast.info("Account coming soon")}
-									title="Account"
-									className="group relative flex h-9 w-9 items-center justify-center rounded-lg text-foreground/55 outline-none transition hover:text-foreground focus:outline-none focus-visible:outline-none"
-									whileHover={{ opacity: 1 }}
-									initial={{ opacity: 0.55 }}
-								>
-									<motion.span className="absolute inset-0 rounded-lg bg-foreground/[0.04] opacity-0 transition group-hover:opacity-100" />
-									<User className="relative z-10 h-[22px] w-[22px]" />
-								</motion.button>
-							</div>
 						</div>
 						{/* Panel */}
 						{activeEffectSection === "extensions" ? (

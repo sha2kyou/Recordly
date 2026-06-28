@@ -150,14 +150,14 @@ function getPlatformAppIconFilename(size: 32 | 128 | 512) {
 
 function getDefaultTrayIcon() {
 	if (!defaultTrayIcon) {
-		defaultTrayIcon = getTrayIcon(getPlatformAppIconFilename(32));
+		defaultTrayIcon = getTrayIcon("tray-icons/tray-video.png");
 	}
 	return defaultTrayIcon;
 }
 
 function getRecordingTrayIcon() {
 	if (!recordingTrayIcon) {
-		recordingTrayIcon = getTrayIcon("rec-button.png");
+		recordingTrayIcon = getTrayIcon("tray-icons/tray-video-fill.png");
 	}
 	return recordingTrayIcon;
 }
@@ -407,11 +407,15 @@ function getAppImage(filename: string) {
 }
 
 function getTrayIcon(filename: string) {
-	return getAppImage(filename).resize({
-		width: 24,
-		height: 24,
+	const image = getAppImage(filename).resize({
+		width: process.platform === "darwin" ? 18 : 24,
+		height: process.platform === "darwin" ? 18 : 24,
 		quality: "best",
 	});
+	if (process.platform === "darwin") {
+		image.setTemplateImage(true);
+	}
+	return image;
 }
 
 function syncDockIcon() {
