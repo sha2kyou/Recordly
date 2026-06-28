@@ -28,6 +28,8 @@
 		"build:platform-native-helpers": "npm run build:native-helpers && npm run build:whisper-runtime",
 		"build:mac": "npm run package:macos-arm64",
 		"package:macos-arm64": "node scripts/package-macos-arm64.mjs",
+		"normalize:electron-main-cjs": "node scripts/normalize-electron-main-cjs.mjs",
+		"smoke:electron-main-cjs": "node scripts/smoke-electron-main-cjs.mjs",
 		"i18n:check": "node scripts/i18n-check.mjs",
 		"benchmark:export-queues": "node scripts/benchmark-export-queues.mjs",
 		"test": "vitest --run",
@@ -100,5 +102,5 @@
 		"vitest": "^4.0.16",
 		"web-demuxer": "^4.0.0"
 	},
-	"main": "dist-electron/main.js"
+	"main": "dist-electron/main.cjs"
 }

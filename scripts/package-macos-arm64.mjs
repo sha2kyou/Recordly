@@ -32,6 +32,16 @@ const steps = [
 		label: "build renderer and electron bundles",
 	},
 	{
+		command: npmCommand,
+		args: ["run", "normalize:electron-main-cjs"],
+		label: "normalize electron main bundle",
+	},
+	{
+		command: npmCommand,
+		args: ["run", "smoke:electron-main-cjs"],
+		label: "smoke test electron main bundle",
+	},
+	{
 		command: "electron-builder",
 		args: ["--mac", "--arm64", ...extraElectronBuilderArgs],
 		label: "package macOS arm64 artifacts",
